@@ -9,12 +9,9 @@ use std::mem;
 use std::ptr;
 use std::str;
 
-use glutin::dpi::PhysicalPosition;
-use glutin::dpi::PhysicalSize;
-use glutin::event::MouseButton;
-use glutin::event::ElementState;
-use glutin::event::TouchPhase;
-use glutin::event::MouseScrollDelta;
+use glutin::dpi::{PhysicalPosition, PhysicalSize};
+use glutin::event::{Event, WindowEvent, DeviceEvent, MouseButton, ElementState, TouchPhase, MouseScrollDelta};
+use glutin::event_loop::ControlFlow;
 
 // Shader sources
 static VS_SRC: &'static str = include_str!("shader.vert");
@@ -89,17 +86,20 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
-fn main() {
-    let screen_position: PhysicalPosition<i32> = PhysicalPosition::new(-5, 0);
-    let screen_size: PhysicalSize<u32> = PhysicalSize::new(1920, 1079);
+fn get_gl_size(size: f64, window_size: PhysicalSize<u32>) -> PhysicalSize<f64> {
+    let window_height_ratio = (window_size.width as f64) / (window_size.height as f64);
+    let w = size / (window_size.width as f64) * 2.0;
+    PhysicalSize::new(w, w * window_height_ratio)
+}
 
-    let mut vertex_data = vec![0.0; 64];
+fn main() {
+    // Offset from top left of the screen
+    let screen_position: PhysicalPosition<i32> = PhysicalPosition::new(-5, 0);
+
+    // Size of the overlay (height has -1 to avoid buggy transparency???)
+    let screen_size: PhysicalSize<u32> = PhysicalSize::new(1920, 1080 - 1);
+
     let event_loop = glutin::event_loop::EventLoop::new();
-    let mut first_draw = true;
-    let mut mouse_is_down = false;
-    let mut line_width = 5.0;
-    let mut prev_cursor_x = 0.0;
-    let mut prev_cursor_y = 0.0;
 
     let window_builder = glutin::window::WindowBuilder::new()
         .with_title("Whiteboard")
@@ -136,7 +136,7 @@ fn main() {
         gl::GenVertexArrays(1, &mut vao);
         gl::BindVertexArray(vao);
 
-        // Create a Vertex Buffer Object
+        // Create Vertex Buffer Object
         gl::GenBuffers(1, &mut vbo);
         gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
 
@@ -157,15 +157,15 @@ fn main() {
         );
     }
 
-    // unsafe {
-    //     gl::ClearColor(0.0,0.0,0.0,0.0);
-    //     gl::Clear(gl::COLOR_BUFFER_BIT);
-    // }
-    // gl_window.swap_buffers().unwrap();
-
+    let window_size = gl_window.window().inner_size();
+    let mut vertex_data = vec![0.0; 64];                            // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
+    let mut first_draw = true;                                      // true if the mouse just got pressed
+    let mut mouse_is_down = false;
+    let mut line_width = 5.0;                                       // Line width to draw *in pixels*
+    let mut line_gl_width = get_gl_size(line_width, window_size);   // Line width in gl size (given the screen width is from -1..1)
+    let mut prev_positions = [0.0_f64; 4];                          // Previous triangles ending points (old p2.x, p2.y, p3.x, p3.y)
+    
     event_loop.run(move |event, _, control_flow| {
-        use glutin::event::{Event, WindowEvent};
-        use glutin::event_loop::ControlFlow;
         *control_flow = ControlFlow::Wait;
 
         match event {
@@ -177,14 +177,10 @@ fn main() {
                 // WindowEvent::Focused(_has_focus) => {
                 //     println!("Focused");
                 // }
-                // WindowEvent::Moved(_position) => {
-                //     println!("Moved");
-                // }
                 // WindowEvent::ModifiersChanged(_state) => {
                 //     println!("Modifiers changed");
                 // }
                 WindowEvent::CloseRequested => {
-                    // Cleanup
                     unsafe {
                         gl::DeleteProgram(program);
                         gl::DeleteShader(fs);
@@ -194,12 +190,14 @@ fn main() {
                     }
                     *control_flow = ControlFlow::Exit
                 },
+                // Mouse pressed
                 #[allow(deprecated)]
                 WindowEvent::MouseInput {device_id: _, state, button, modifiers: _} => {
                     if button == MouseButton::Left {
                         mouse_is_down = state == ElementState::Pressed
                     }
                 }
+                // Mousewheel
                 #[allow(deprecated)]
                 WindowEvent::MouseWheel {device_id: _, delta, phase, modifiers: _} => {
                     if phase == TouchPhase::Moved {
@@ -208,46 +206,110 @@ fn main() {
                                 line_width -= y as f64;
                                 if line_width < 1.0 { line_width = 1.0; }
                                 if line_width > 10.0 { line_width = 10.0; }
+
+                                line_gl_width = get_gl_size(line_width, window_size);
                             }
                             _ => ()
                         }
                     }
                 }
+                // Mouse moved
                 #[allow(deprecated)]
                 WindowEvent::CursorMoved {device_id: _, position, modifiers: _} => {
-                    let window_size = gl_window.window().inner_size();
-                    let cursor_display_size = line_width / (window_size.width as f64) * 2.0;
-                    let height_ratio = (window_size.width as f64) / (window_size.height as f64);
-                    let cursor_x = position.x / (window_size.width as f64) * 2.0 - 1.0;
-                    let cursor_y = position.y / (window_size.height as f64) * -2.0 + 1.0;
+                    let cursor = PhysicalPosition::new(
+                        position.x / (window_size.width as f64) * 2.0 - 1.0,
+                        position.y / (window_size.height as f64) * -2.0 + 1.0,
+                    );
 
                     // Cursor circle overlay
                     for i in 0..32 {
-                        let angle = (i as f64) / 32.0 * 360.0 * 3.14159 / 180.0;
-                        vertex_data[i * 2 + 0] = (cursor_x + (angle.cos() * cursor_display_size)) as f32;
-                        vertex_data[i * 2 + 1] = (cursor_y + (angle.sin() * (cursor_display_size * height_ratio))) as f32;
+                        let angle = (i as f64) / 32.0 * (2.0 * 3.14159);
+                        vertex_data[i * 2 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
+                        vertex_data[i * 2 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
                     }
 
                     if mouse_is_down {
+                        /*
+                        Each line segment is formed of 2 triangles that form a quad
+
+                        p1 __ p4
+                          |\ |
+                          | \|
+                        p2 ¯¯ p3
+
+                        p1: previous cursor position
+                        p2: current cursor position
+                        p3: current cursor + line width
+                        p4: previous cursor + line width
+                        */
+                        let angle = (cursor.y - prev_positions[1]).atan2(cursor.x - prev_positions[0]);
+                        
+                        let p1 = [
+                            prev_positions[0] as f32, 
+                            prev_positions[1] as f32,
+                        ];
+
+                        let p2 = [
+                            cursor.x as f32, 
+                            cursor.y as f32,
+                        ];
+
+                        let p3 = [
+                            (cursor.x + (angle + (3.14159/2.0)).cos() * line_gl_width.width) as f32,
+                            (cursor.y + (angle + (3.14159/2.0)).sin() * line_gl_width.width) as f32,
+                        ];
+
+                        let p4 = [
+                            prev_positions[2] as f32, 
+                            prev_positions[3] as f32,
+                        ];
+
+                        prev_positions[0] = p2[0] as f64;
+                        prev_positions[1] = p2[1] as f64;
+                        prev_positions[2] = p3[0] as f64;
+                        prev_positions[3] = p3[1] as f64;
+
                         if first_draw {
+                            // Skip pushing the line segment since we only have the first point available yet
                             first_draw = false;
                         } else {
-                            vertex_data.push(prev_cursor_x as f32);
-                            vertex_data.push(prev_cursor_y as f32);
-                            vertex_data.push(cursor_x as f32);
-                            vertex_data.push(cursor_y as f32);
+                            // 1
+                            vertex_data.push(p1[0]);
+                            vertex_data.push(p1[1]);
+                            
+                            // 2
+                            vertex_data.push(p2[0]);
+                            vertex_data.push(p2[1]);
+
+                            // 3
+                            vertex_data.push(p3[0]);
+                            vertex_data.push(p3[1]);
+
+                            // 1
+                            vertex_data.push(p1[0]);
+                            vertex_data.push(p1[1]);
+
+                            // 3
+                            vertex_data.push(p3[0]);
+                            vertex_data.push(p3[1]);
+
+                            // 4
+                            vertex_data.push(p4[0]);
+                            vertex_data.push(p4[1]);
                         }
-                        prev_cursor_x = cursor_x;
-                        prev_cursor_y = cursor_y;
+
                     } else {
                         first_draw = true;
                     }
 
+                    // Draw phase
                     unsafe { 
+                        // Start by clearing everything from last frame
+                        // ClearColor has to come BEFORE Clear
                         gl::ClearColor(0.0,0.0,0.0,0.0);
                         gl::Clear(gl::COLOR_BUFFER_BIT);
 
-                        // copy the vertex data to the vertex buffer
+                        // copy the vertices to the vertex buffer
                         gl::BufferData(
                             gl::ARRAY_BUFFER,
                             (vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
@@ -255,17 +317,15 @@ fn main() {
                             gl::STATIC_DRAW,
                         );
 
-                        // Draw cursor circle overlay
+                        // Draw cursor reticle
                         gl::LineWidth(1.0);
                         gl::DrawArrays(gl::LINE_LOOP, 0, 32);
 
-                        // Draw lines
+                        // Draw lines using triangles to draw quads
                         let n_lines = vertex_data.len() - 64;
                         if n_lines > 0 {
-                            gl::LineWidth(line_width as f32);
-                            gl::DrawArrays(gl::LINES, 32, n_lines as i32);
+                            gl::DrawArrays(gl::TRIANGLES, 32, n_lines as i32);
                         }
-                        
                     }
 
                     gl_window.swap_buffers().unwrap();
