@@ -10,7 +10,7 @@ use std::ptr;
 use std::str;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
-use glutin::event::{Event, WindowEvent, DeviceEvent, MouseButton, ElementState, TouchPhase, MouseScrollDelta};
+use glutin::event::{Event, WindowEvent, MouseButton, ElementState, TouchPhase, MouseScrollDelta};
 use glutin::event_loop::ControlFlow;
 
 // Shader sources
@@ -112,7 +112,6 @@ fn main() {
         
     let gl_window = glutin::ContextBuilder::new()
         .with_multisampling(8)
-        .with_vsync(true)
         .build_windowed(window_builder, &event_loop)
         .unwrap();
         
@@ -157,29 +156,97 @@ fn main() {
         );
     }
 
+    let n_cursor_reticle_points = 32;
     let window_size = gl_window.window().inner_size();
-    let mut vertex_data = vec![0.0; 64];                            // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
-    let mut first_draw = true;                                      // true if the mouse just got pressed
-    let mut mouse_is_down = false;
-    let mut line_width = 5.0;                                       // Line width to draw *in pixels*
-    let mut line_gl_width = get_gl_size(line_width, window_size);   // Line width in gl size (given the screen width is from -1..1)
-    let mut prev_positions = [0.0_f64; 4];                          // Previous triangles ending points (old p2.x, p2.y, p3.x, p3.y)
-    
+    let mut vertex_data = vec![0.0; n_cursor_reticle_points * 2]; // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
+    let mut first_draw = true; // Pen just set down for the first frame, will not draw a line yet
+    let mut pen_is_down = false; // Draw lines when true
+    let mut line_width = 5.0; // Line width to draw *in pixels*
+    let mut line_width_modifier = 1.0;  // Used by pen pressure to change the line_width
+    let mut line_gl_width = get_gl_size(line_width * line_width_modifier, window_size); // Line width in gl size (given the screen width is from -1..1)
+    let mut prev_positions = [0.0_f64; 4]; // Previous triangles ending points (old p2.x, p2.y, p3.x, p3.y)
+    let mut cursor_position = PhysicalPosition::new(0.0, 0.0); // Will hold mouse or tablet position
+    let mut need_redraw = false; // Triggers a screen redraw when set to true
+    let mut undo_steps: Vec<usize> = Vec::new();
+    let mut ctrl_is_down = false;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
             Event::LoopDestroyed => return,
             Event::WindowEvent { event, .. } => match event {
-                // WindowEvent::Resized(physical_size) => {
-                //     gl_window.resize(physical_size);
-                // }
-                // WindowEvent::Focused(_has_focus) => {
-                //     println!("Focused");
-                // }
-                // WindowEvent::ModifiersChanged(_state) => {
-                //     println!("Modifiers changed");
-                // }
+                WindowEvent::ModifiersChanged(modifier) => {
+                    ctrl_is_down = modifier.ctrl()
+                }
+                WindowEvent::KeyboardInput { device_id: _, input, is_synthetic: _} => {
+                    if input.state == glutin::event::ElementState::Released {
+                        // println!("{}", input.scancode);
+                        match input.scancode {
+                            // escape
+                            1 => {
+                                // Todo: Request close event
+                                unsafe {
+                                    gl::DeleteProgram(program);
+                                    gl::DeleteShader(fs);
+                                    gl::DeleteShader(vs);
+                                    gl::DeleteBuffers(1, &vbo);
+                                    gl::DeleteVertexArrays(1, &vao);
+                                }
+                                *control_flow = ControlFlow::Exit
+                            }
+                            // spacebar
+                            57 => {
+                                // Clear drawings
+                                vertex_data.resize(n_cursor_reticle_points * 2, 0.0);
+                                need_redraw = true;
+                            }
+                            // z
+                            44 => {
+                                // ctrl-z
+                                if ctrl_is_down {
+                                    // undo if any undo steps are available
+                                    match undo_steps.pop() {
+                                        Some(n) => {
+                                            vertex_data.resize(n, 0.0);
+                                            need_redraw = true;
+                                        }
+                                        None => ()
+                                    }
+                                }
+                                
+                            }
+                            _ => ()
+                        }
+                    }
+                }
+                WindowEvent::Touch(touch_event) => {
+                    need_redraw = true;
+
+                    if touch_event.phase == TouchPhase::Started {
+                        pen_is_down = true;
+                        first_draw = true;
+                    }
+                    if touch_event.phase == TouchPhase::Ended || touch_event.phase == TouchPhase::Cancelled {
+                        pen_is_down = false;
+                    }
+
+                    cursor_position = touch_event.location;
+
+                    match touch_event.force {
+                        Some(force_type) => {
+                            match force_type {
+                                glutin::event::Force::Calibrated { force, max_possible_force, altitude_angle: _ } => {
+                                    line_width_modifier = force / max_possible_force;
+                                }
+                                glutin::event::Force::Normalized(force) => {
+                                    line_width_modifier = force;
+                                }
+                            }
+                        }
+                        None => ()
+                    }
+                }
                 WindowEvent::CloseRequested => {
                     unsafe {
                         gl::DeleteProgram(program);
@@ -191,13 +258,15 @@ fn main() {
                     *control_flow = ControlFlow::Exit
                 },
                 // Mouse pressed
+                // deprecated is for modifiers
                 #[allow(deprecated)]
                 WindowEvent::MouseInput {device_id: _, state, button, modifiers: _} => {
                     if button == MouseButton::Left {
-                        mouse_is_down = state == ElementState::Pressed
+                        pen_is_down = state == ElementState::Pressed
                     }
                 }
                 // Mousewheel
+                // deprecated is for modifiers
                 #[allow(deprecated)]
                 WindowEvent::MouseWheel {device_id: _, delta, phase, modifiers: _} => {
                     if phase == TouchPhase::Moved {
@@ -205,134 +274,144 @@ fn main() {
                             MouseScrollDelta::LineDelta(_x, y) => {
                                 line_width -= y as f64;
                                 if line_width < 1.0 { line_width = 1.0; }
-                                if line_width > 10.0 { line_width = 10.0; }
-
-                                line_gl_width = get_gl_size(line_width, window_size);
+                                if line_width > 15.0 { line_width = 30.0; }
                             }
                             _ => ()
                         }
                     }
                 }
                 // Mouse moved
+                // deprecated is for modifiers
                 #[allow(deprecated)]
                 WindowEvent::CursorMoved {device_id: _, position, modifiers: _} => {
-                    let cursor = PhysicalPosition::new(
-                        position.x / (window_size.width as f64) * 2.0 - 1.0,
-                        position.y / (window_size.height as f64) * -2.0 + 1.0,
-                    );
-
-                    // Cursor circle overlay
-                    for i in 0..32 {
-                        let angle = (i as f64) / 32.0 * (2.0 * 3.14159);
-                        vertex_data[i * 2 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
-                        vertex_data[i * 2 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
-                    }
-
-                    if mouse_is_down {
-                        /*
-                        Each line segment is formed of 2 triangles that form a quad
-
-                        p1 __ p4
-                          |\ |
-                          | \|
-                        p2 ¯¯ p3
-
-                        p1: previous cursor position
-                        p2: current cursor position
-                        p3: current cursor + line width
-                        p4: previous cursor + line width
-                        */
-                        let angle = (cursor.y - prev_positions[1]).atan2(cursor.x - prev_positions[0]);
-                        
-                        let p1 = [
-                            prev_positions[0] as f32, 
-                            prev_positions[1] as f32,
-                        ];
-
-                        let p2 = [
-                            cursor.x as f32, 
-                            cursor.y as f32,
-                        ];
-
-                        let p3 = [
-                            (cursor.x + (angle + (3.14159/2.0)).cos() * line_gl_width.width) as f32,
-                            (cursor.y + (angle + (3.14159/2.0)).sin() * line_gl_width.width) as f32,
-                        ];
-
-                        let p4 = [
-                            prev_positions[2] as f32, 
-                            prev_positions[3] as f32,
-                        ];
-
-                        prev_positions[0] = p2[0] as f64;
-                        prev_positions[1] = p2[1] as f64;
-                        prev_positions[2] = p3[0] as f64;
-                        prev_positions[3] = p3[1] as f64;
-
-                        if first_draw {
-                            // Skip pushing the line segment since we only have the first point available yet
-                            first_draw = false;
-                        } else {
-                            // 1
-                            vertex_data.push(p1[0]);
-                            vertex_data.push(p1[1]);
-                            
-                            // 2
-                            vertex_data.push(p2[0]);
-                            vertex_data.push(p2[1]);
-
-                            // 3
-                            vertex_data.push(p3[0]);
-                            vertex_data.push(p3[1]);
-
-                            // 1
-                            vertex_data.push(p1[0]);
-                            vertex_data.push(p1[1]);
-
-                            // 3
-                            vertex_data.push(p3[0]);
-                            vertex_data.push(p3[1]);
-
-                            // 4
-                            vertex_data.push(p4[0]);
-                            vertex_data.push(p4[1]);
-                        }
-
-                    } else {
-                        first_draw = true;
-                    }
-
-                    // Draw phase
-                    unsafe { 
-                        // Start by clearing everything from last frame
-                        // ClearColor has to come BEFORE Clear
-                        gl::ClearColor(0.0,0.0,0.0,0.0);
-                        gl::Clear(gl::COLOR_BUFFER_BIT);
-
-                        // copy the vertices to the vertex buffer
-                        gl::BufferData(
-                            gl::ARRAY_BUFFER,
-                            (vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
-                            mem::transmute(&vertex_data[0]),
-                            gl::STATIC_DRAW,
-                        );
-
-                        // Draw cursor reticle
-                        gl::LineWidth(1.0);
-                        gl::DrawArrays(gl::LINE_LOOP, 0, 32);
-
-                        // Draw lines using triangles to draw quads
-                        let n_lines = vertex_data.len() - 64;
-                        if n_lines > 0 {
-                            gl::DrawArrays(gl::TRIANGLES, 32, n_lines as i32);
-                        }
-                    }
-
-                    gl_window.swap_buffers().unwrap();
+                    cursor_position = position;
+                    need_redraw = true;
                 }
                 _ => (),
             },
             _ => (),
+        }
+
+        if need_redraw {
+            need_redraw = false;
+
+            let cursor = PhysicalPosition::new(
+                cursor_position.x / (window_size.width as f64) * 2.0 - 1.0,
+                cursor_position.y / (window_size.height as f64) * -2.0 + 1.0,
+            );
+
+            // update line width in gl scale
+            line_gl_width = get_gl_size(line_width * line_width_modifier, window_size);
+        
+            // Cursor circle overlay
+            for i in 0..n_cursor_reticle_points {
+                let angle = (i as f64) / 32.0 * (2.0 * 3.14159);
+                vertex_data[i * 2 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
+                vertex_data[i * 2 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
+            }
+        
+            if pen_is_down {
+                /*
+                Each line segment is formed of 2 triangles that form a quad
+        
+                p1 __ p4
+                  |\ |
+                  | \|
+                p2 ¯¯ p3
+        
+                p1: previous cursor position
+                p2: current cursor position
+                p3: current cursor + line width
+                p4: previous cursor + line width
+                */
+                let angle = (cursor.y - prev_positions[1]).atan2(cursor.x - prev_positions[0]);
+                
+                let p1 = [
+                    prev_positions[0] as f32, 
+                    prev_positions[1] as f32,
+                ];
+        
+                let p2 = [
+                    cursor.x as f32, 
+                    cursor.y as f32,
+                ];
+        
+                let p3 = [
+                    (cursor.x + (angle + (3.14159/2.0)).cos() * line_gl_width.width) as f32,
+                    (cursor.y + (angle + (3.14159/2.0)).sin() * line_gl_width.width) as f32,
+                ];
+        
+                let p4 = [
+                    prev_positions[2] as f32, 
+                    prev_positions[3] as f32,
+                ];
+        
+                prev_positions[0] = p2[0] as f64;
+                prev_positions[1] = p2[1] as f64;
+                prev_positions[2] = p3[0] as f64;
+                prev_positions[3] = p3[1] as f64;
+        
+                if first_draw {
+                    // Skip pushing the line segment since we only have the first point available yet
+                    first_draw = false;
+                    undo_steps.push(vertex_data.len());
+                } else {
+                    // 1
+                    vertex_data.push(p1[0]);
+                    vertex_data.push(p1[1]);
+                    
+                    // 2
+                    vertex_data.push(p2[0]);
+                    vertex_data.push(p2[1]);
+        
+                    // 3
+                    vertex_data.push(p3[0]);
+                    vertex_data.push(p3[1]);
+        
+                    // 1
+                    vertex_data.push(p1[0]);
+                    vertex_data.push(p1[1]);
+        
+                    // 3
+                    vertex_data.push(p3[0]);
+                    vertex_data.push(p3[1]);
+        
+                    // 4
+                    vertex_data.push(p4[0]);
+                    vertex_data.push(p4[1]);
+                }
+        
+            } else {
+                first_draw = true;
+            }
+        
+            // Draw phase
+            unsafe { 
+                // Start by clearing everything from last frame
+                // ClearColor has to come BEFORE Clear
+                gl::ClearColor(0.0,0.0,0.0,0.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+        
+                // copy the vertices to the vertex buffer
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    (vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
+                    mem::transmute(&vertex_data[0]),
+                    gl::STATIC_DRAW,
+                );
+        
+                // Draw cursor reticle
+                gl::LineWidth(1.0);
+                gl::DrawArrays(gl::LINE_LOOP, 0, 32);
+        
+                // Draw lines using triangles to draw quads
+                let n_lines = vertex_data.len() - 64;
+                if n_lines > 0 {
+                    gl::DrawArrays(gl::TRIANGLES, 32, n_lines as i32);
+                }
+            }
+        
+            gl_window.swap_buffers().unwrap();
         }
     });
 }
