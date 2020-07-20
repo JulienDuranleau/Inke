@@ -143,22 +143,35 @@ fn main() {
         gl::UseProgram(program);
         gl::BindFragDataLocation(program, 0, CString::new("out_color").unwrap().as_ptr());
 
-        // Specify the layout of the vertex data
+        // position attrib
         let pos_attr = gl::GetAttribLocation(program, CString::new("position").unwrap().as_ptr());
         gl::EnableVertexAttribArray(pos_attr as GLuint);
         gl::VertexAttribPointer(
-            pos_attr as GLuint,
-            2,
-            gl::FLOAT,
-            gl::FALSE as GLboolean,
-            0,
-            ptr::null(),
+            pos_attr as GLuint,                                   // index of attribute
+            3,                                                    // the number of components
+            gl::FLOAT,                                            // data type
+            gl::FALSE as GLboolean,                               // normalized
+            (6 * std::mem::size_of::<f32>()) as gl::types::GLint, // stride (byte offset)
+            ptr::null(),                                          // offset of the first component
+        );
+
+        // vertex_color attrib
+        let color_attr = gl::GetAttribLocation(program, CString::new("vColor").unwrap().as_ptr());
+        gl::EnableVertexAttribArray(color_attr as GLuint);
+        gl::VertexAttribPointer(
+            color_attr as GLuint,                                 // index of attribute
+            3,                                                    // the number of components
+            gl::FLOAT,                                            // data type
+            gl::FALSE as GLboolean,                               // normalized
+            (6 * std::mem::size_of::<f32>()) as gl::types::GLint, // stride (byte offset)
+            (3 * std::mem::size_of::<f32>()) as *const gl::types::GLvoid, // offset of the first component
         );
     }
 
     let n_cursor_reticle_points = 32;
     let window_size = gl_window.window().inner_size();
-    let mut vertex_data = vec![0.0; n_cursor_reticle_points * 2]; // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
+    let mut vertex_data = Vec::new(); // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
+    let mut current_color = [1.0_f32, 1.0_f32, 1.0_f32];
     let mut is_first_vertex = true; // Pen just set down for the first frame, will not draw a line yet
     let mut is_second_vertex = false; // The first line segment is about to be completed with this second vertex
     let mut pen_is_down = false; // Draw lines when true
@@ -170,6 +183,17 @@ fn main() {
     let mut need_redraw = false; // Triggers a screen redraw when set to true
     let mut undo_steps: Vec<usize> = Vec::new();
     let mut ctrl_is_down = false;
+
+    // Initialize cursor reticle vertices
+    for _i in 0..n_cursor_reticle_points {
+        // line vertex
+        vertex_data.push(0.0);
+        vertex_data.push(0.0);
+        vertex_data.push(0.0);
+
+        // color
+        vertex_data.extend(&current_color);
+    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -203,7 +227,7 @@ fn main() {
                             // spacebar
                             57 => {
                                 // Clear drawings
-                                vertex_data.resize(n_cursor_reticle_points * 2, 0.0);
+                                vertex_data.resize(n_cursor_reticle_points * 6, 0.0);
                                 need_redraw = true;
                                 is_first_vertex = true;
                                 is_second_vertex = false;
@@ -219,12 +243,93 @@ fn main() {
                                             need_redraw = true;
                                             is_first_vertex = true;
                                             is_second_vertex = false;
-                                            println!("Undo at {}", n);
                                         }
                                         None => (),
                                     }
                                 }
                             }
+
+                            // q,w,e,r,... for colors
+
+                            // q (white)
+                            16 => {
+                                current_color[0] = 1.0;
+                                current_color[1] = 1.0;
+                                current_color[2] = 1.0;
+                                need_redraw = true;
+                            }
+                            // w (black)
+                            17 => {
+                                current_color[0] = 0.05;
+                                current_color[1] = 0.05;
+                                current_color[2] = 0.05;
+                                need_redraw = true;
+                            }
+                            // e (orange)
+                            18 => {
+                                current_color[0] = 1.0;
+                                current_color[1] = 0.58;
+                                current_color[2] = 0.0;
+                                need_redraw = true;
+                            }
+                            // e (pink)
+                            19 => {
+                                current_color[0] = 1.0;
+                                current_color[1] = 0.0;
+                                current_color[2] = 0.86;
+                                need_redraw = true;
+                            }
+                            // r (red)
+                            20 => {
+                                current_color[0] = 1.0;
+                                current_color[1] = 0.2;
+                                current_color[2] = 0.2;
+                                need_redraw = true;
+                            }
+                            // t (green)
+                            21 => {
+                                current_color[0] = 0.1;
+                                current_color[1] = 1.0;
+                                current_color[2] = 0.3;
+                                need_redraw = true;
+                            }
+                            // y (blue)
+                            22 => {
+                                current_color[0] = 0.1;
+                                current_color[1] = 0.3;
+                                current_color[2] = 1.0;
+                                need_redraw = true;
+                            }
+                            // u (yellow)
+                            23 => {
+                                current_color[0] = 1.0;
+                                current_color[1] = 1.0;
+                                current_color[2] = 0.0;
+                                need_redraw = true;
+                            }
+
+                            // 1,2,3,... for size
+                            2 => {
+                                line_width = 1.0;
+                                need_redraw = true;
+                            }
+                            3 => {
+                                line_width = 3.0;
+                                need_redraw = true;
+                            }
+                            4 => {
+                                line_width = 5.0;
+                                need_redraw = true;
+                            }
+                            5 => {
+                                line_width = 10.0;
+                                need_redraw = true;
+                            }
+                            6 => {
+                                line_width = 30.0;
+                                need_redraw = true;
+                            }
+
                             _ => (),
                         }
                     }
@@ -338,8 +443,12 @@ fn main() {
             // Cursor circle overlay
             for i in 0..n_cursor_reticle_points {
                 let angle = (i as f64) / 32.0 * (2.0 * 3.14159);
-                vertex_data[i * 2 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
-                vertex_data[i * 2 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
+                vertex_data[i * 6 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
+                vertex_data[i * 6 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
+                // skip z  [i * 6 + 2]
+                vertex_data[i * 6 + 3] = current_color[0];
+                vertex_data[i * 6 + 4] = current_color[1];
+                vertex_data[i * 6 + 5] = current_color[2];
             }
 
             if pen_is_down {
@@ -395,31 +504,50 @@ fn main() {
                     is_first_vertex = false;
                     is_second_vertex = true;
                     undo_steps.push(vertex_data.len());
-                    println!("Add undo step at : {}", vertex_data.len());
                 } else {
                     // 1
                     vertex_data.push(p1[0]);
                     vertex_data.push(p1[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
 
                     // 2
                     vertex_data.push(p2[0]);
                     vertex_data.push(p2[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
 
                     // 3
                     vertex_data.push(p3[0]);
                     vertex_data.push(p3[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
 
                     // 1
                     vertex_data.push(p1[0]);
                     vertex_data.push(p1[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
 
                     // 3
                     vertex_data.push(p3[0]);
                     vertex_data.push(p3[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
 
                     // 4
                     vertex_data.push(p4[0]);
                     vertex_data.push(p4[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
+
+                    // ^ Done with the two triangles ^
 
                     is_second_vertex = false;
                 }
@@ -443,14 +571,19 @@ fn main() {
                 );
 
                 // Draw cursor reticle
-                gl::LineWidth(1.0);
+                gl::LineWidth(2.0);
                 gl::DrawArrays(gl::LINE_LOOP, 0, n_cursor_reticle_points as i32);
 
                 // Draw lines using triangles to draw quads
                 // Skip the first n_cursor_reticle_points points used for the cursor
-                let n_line_vertices = vertex_data.len() / 2 - n_cursor_reticle_points;
+                // Divide by 6 since each vertex has 3 floats for pos + 3 for color
+                let n_line_vertices = vertex_data.len() / 6 - n_cursor_reticle_points;
                 if n_line_vertices > 0 {
-                    gl::DrawArrays(gl::TRIANGLES, 32, n_line_vertices as i32);
+                    gl::DrawArrays(
+                        gl::TRIANGLES,
+                        n_cursor_reticle_points as i32,
+                        n_line_vertices as i32,
+                    );
                 }
             }
 
