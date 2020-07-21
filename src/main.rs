@@ -1,5 +1,7 @@
 // https://github.com/Nercury/rust-and-opengl-lessons
 
+#![windows_subsystem = "windows"]
+
 extern crate gl;
 extern crate glutin;
 
@@ -207,8 +209,7 @@ fn main() {
                 WindowEvent::Focused(has_focus) => {
                     if has_focus {
                         // unhide
-                        gl_window.window().set_outer_position(screen_position);
-                        is_window_hidden = true;
+                        is_window_hidden = false;
                     } else {
                         // force window to minimize
                         gl_window.window().set_minimized(true);
@@ -240,16 +241,8 @@ fn main() {
                             }
                             // h
                             35 => {
+                                need_redraw = true;
                                 is_window_hidden = !is_window_hidden;
-
-                                if is_window_hidden {
-                                    gl_window.window().set_outer_position(screen_position);
-                                } else {
-                                    // ugly way to keep focus and keyboard input while hiding
-                                    gl_window
-                                        .window()
-                                        .set_outer_position(PhysicalPosition::new(99999, 99999));
-                                }
                             }
                             // b
                             48 => {
@@ -483,7 +476,7 @@ fn main() {
                 vertex_data[i * 6 + 5] = current_color[2];
             }
 
-            if pen_is_down {
+            if pen_is_down && !is_window_hidden {
                 /*
                 Each line segment is formed of 2 triangles that form a quad
 
@@ -602,39 +595,46 @@ fn main() {
                 n_current_line_vertex = 0;
             }
 
-            // GL Draw Phase
-            unsafe {
-                // Start by clearing everything from last frame
-                // ClearColor has to come BEFORE Clear
-                if is_background_visible {
-                    gl::ClearColor(0.0, 0.0, 0.0, 0.8);
-                } else {
+            if is_window_hidden {
+                unsafe {
                     gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
                 }
-                gl::Clear(gl::COLOR_BUFFER_BIT);
+            } else {
+                // GL Draw Phase
+                unsafe {
+                    // Start by clearing everything from last frame
+                    // ClearColor has to come BEFORE Clear
+                    if is_background_visible {
+                        gl::ClearColor(0.0, 0.0, 0.0, 0.8);
+                    } else {
+                        gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                    }
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
 
-                // copy the vertices to the vertex buffer
-                gl::BufferData(
-                    gl::ARRAY_BUFFER,
-                    (vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
-                    mem::transmute(&vertex_data[0]),
-                    gl::STATIC_DRAW,
-                );
-
-                // Draw cursor reticle
-                gl::LineWidth(2.0);
-                gl::DrawArrays(gl::LINE_LOOP, 0, n_cursor_reticle_points as i32);
-
-                // Draw lines using triangles to draw quads
-                // Skip the first n_cursor_reticle_points points used for the cursor
-                // Divide by 6 since each vertex has 3 floats for pos + 3 for color
-                let n_line_vertices = vertex_data.len() / 6 - n_cursor_reticle_points;
-                if n_line_vertices > 0 {
-                    gl::DrawArrays(
-                        gl::TRIANGLES,
-                        n_cursor_reticle_points as i32,
-                        n_line_vertices as i32,
+                    // copy the vertices to the vertex buffer
+                    gl::BufferData(
+                        gl::ARRAY_BUFFER,
+                        (vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
+                        mem::transmute(&vertex_data[0]),
+                        gl::STATIC_DRAW,
                     );
+
+                    // Draw cursor reticle
+                    gl::LineWidth(2.0);
+                    gl::DrawArrays(gl::LINE_LOOP, 0, n_cursor_reticle_points as i32);
+
+                    // Draw lines using triangles to draw quads
+                    // Skip the first n_cursor_reticle_points points used for the cursor
+                    // Divide by 6 since each vertex has 3 floats for pos + 3 for color
+                    let n_line_vertices = vertex_data.len() / 6 - n_cursor_reticle_points;
+                    if n_line_vertices > 0 {
+                        gl::DrawArrays(
+                            gl::TRIANGLES,
+                            n_cursor_reticle_points as i32,
+                            n_line_vertices as i32,
+                        );
+                    }
                 }
             }
 

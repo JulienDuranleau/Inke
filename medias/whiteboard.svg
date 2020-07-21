@@ -1,0 +1,7 @@
+<svg height='300px' width='300px'  fill="#000000" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" x="0px" y="0px">
+   <g>
+      <path d="M20,18a2,2,0,0,1,2-2h2a2,2,0,0,1,2,2v1h3V7a1,1,0,0,0-1-1H4A1,1,0,0,0,3,7V19H20Z"></path>
+      <rect x="22" y="18" width="2" height="1"></rect>
+      <path d="M3,21v4a1,1,0,0,0,1,1H28a1,1,0,0,0,1-1V21Z"></path>
+   </g>
+</svg>
