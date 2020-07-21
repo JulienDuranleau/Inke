@@ -4,6 +4,7 @@ extern crate gl;
 extern crate glutin;
 
 use gl::types::*;
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::ffi::CString;
 use std::mem;
 use std::ptr;
@@ -170,18 +171,20 @@ fn main() {
 
     let n_cursor_reticle_points = 32;
     let window_size = gl_window.window().inner_size();
-    let mut vertex_data = Vec::new(); // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
-    let mut current_color = [1.0_f32, 1.0_f32, 1.0_f32];
-    let mut n_current_line_vertex = 0;
+    let mut vertex_data = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
+    let mut current_color = [1.0_f32, 1.0_f32, 1.0_f32]; // rgb of the line to draw. Also used by the cursor reticle
+    let mut n_current_line_vertex = 0; // Number of vertices in the current line
     let mut pen_is_down = false; // Draw lines when true
     let mut line_width = 5.0; // Line width to draw *in pixels*
     let mut line_width_modifier = 1.0; // Used by pen pressure to change the line_width
     let mut line_gl_width = get_gl_size(line_width * line_width_modifier, window_size); // Line width in gl size (given the screen width is from -1..1)
-    let mut prev_positions = [0.0_f64; 6]; // Previous triangles ending points and previous cursor (old p2.x, p2.y, p3.x, p3.y, cursor.x, cursor.y)
+    let mut prev_positions = [0.0_f64; 6]; // Previous triangles ending points and previous cursor (old p1.x, p1.y, p2.x, p2.y, cursor.x, cursor.y)
     let mut cursor_position = PhysicalPosition::new(0.0, 0.0); // Will hold mouse or tablet position
     let mut need_redraw = false; // Triggers a screen redraw when set to true
-    let mut undo_steps: Vec<usize> = Vec::new();
-    let mut ctrl_is_down = false;
+    let mut undo_steps: Vec<usize> = Vec::new(); // List of indexes in vertex_data representing each possible undo steps
+    let mut ctrl_is_down = false; // Is the Ctrl key currently pressed
+    let mut is_window_hidden = true; // Hide the drawing while keeping focus
+    let mut is_background_visible = false; // Toggle background color overlay
 
     // Initialize cursor reticle vertices
     for _i in 0..n_cursor_reticle_points {
@@ -200,6 +203,17 @@ fn main() {
         match event {
             Event::LoopDestroyed => return,
             Event::WindowEvent { event, .. } => match event {
+                // Alt-tab in and out
+                WindowEvent::Focused(has_focus) => {
+                    if has_focus {
+                        // unhide
+                        gl_window.window().set_outer_position(screen_position);
+                        is_window_hidden = true;
+                    } else {
+                        // force window to minimize
+                        gl_window.window().set_minimized(true);
+                    }
+                }
                 WindowEvent::ModifiersChanged(modifier) => {
                     ctrl_is_down = modifier.ctrl();
                 }
@@ -210,6 +224,7 @@ fn main() {
                 } => {
                     if input.state == glutin::event::ElementState::Released {
                         // println!("{}", input.scancode);
+
                         match input.scancode {
                             // escape
                             1 => {
@@ -223,18 +238,37 @@ fn main() {
                                 }
                                 *control_flow = ControlFlow::Exit
                             }
+                            // h
+                            35 => {
+                                is_window_hidden = !is_window_hidden;
+
+                                if is_window_hidden {
+                                    gl_window.window().set_outer_position(screen_position);
+                                } else {
+                                    // ugly way to keep focus and keyboard input while hiding
+                                    gl_window
+                                        .window()
+                                        .set_outer_position(PhysicalPosition::new(99999, 99999));
+                                }
+                            }
+                            // b
+                            48 => {
+                                // Toggle background
+                                need_redraw = true;
+                                is_background_visible = !is_background_visible;
+                            }
                             // spacebar
                             57 => {
                                 // Clear drawings
-                                vertex_data.resize(n_cursor_reticle_points * 6, 0.0);
                                 need_redraw = true;
+                                vertex_data.resize(n_cursor_reticle_points * 6, 0.0);
                                 n_current_line_vertex = 0;
                             }
                             // z
                             44 => {
                                 // ctrl-z
                                 if ctrl_is_down {
-                                    // undo if any undo steps are available
+                                    // Undo (if any undo steps are available)
                                     match undo_steps.pop() {
                                         Some(n) => {
                                             vertex_data.resize(n, 0.0);
@@ -246,7 +280,7 @@ fn main() {
                                 }
                             }
 
-                            // q,w,e,r,... for colors
+                            // q,w,e,r,... for line colors
 
                             // q (white)
                             16 => {
@@ -397,6 +431,8 @@ fn main() {
                     if phase == TouchPhase::Moved {
                         match delta {
                             MouseScrollDelta::LineDelta(_x, y) => {
+                                need_redraw = true;
+
                                 line_width -= y as f64;
                                 if line_width < 1.0 {
                                     line_width = 1.0;
@@ -438,7 +474,7 @@ fn main() {
 
             // Cursor circle overlay
             for i in 0..n_cursor_reticle_points {
-                let angle = (i as f64) / 32.0 * (2.0 * 3.14159);
+                let angle = (i as f64) / 32.0 * (2.0 * PI);
                 vertex_data[i * 6 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
                 vertex_data[i * 6 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
                 // skip z  [i * 6 + 2]
@@ -451,15 +487,23 @@ fn main() {
                 /*
                 Each line segment is formed of 2 triangles that form a quad
 
-                p1 __ p4
+                p3 __ p4    - old cursor position
                   |\ |
                   | \|
-                p2 ¯¯ p3
+                p1 ¯¯ p2    - new cursor position
 
-                p1: previous cursor position
-                p2: current cursor position
-                p3: current cursor + line width
-                p4: previous cursor + line width
+                p1: current cursor position - line width
+                p2: current cursor position + line width
+                p3: previous cursor position - line width
+                p4: previous cursor position + line width
+
+                The cursor position is always between the two points
+                p3 ____ old cursor ____ p4
+                  |                    |
+                  |                    |
+                  |                    |
+                  |                    |
+                p1¯¯¯¯¯ new cursor ¯¯¯¯ p2
                 */
 
                 // Angle in radians of the line to draw
@@ -467,59 +511,52 @@ fn main() {
                 // but we recalculate it before drawing when we get the second vertex
                 let angle = (cursor.y - prev_positions[5]).atan2(cursor.x - prev_positions[4]);
 
-                // If it's the second vertex (2nd part of first line segment),
+                // If it's the second vertex of the line segment,
                 // we need to recalculate the width of the first vertex since
                 // we didnt know the angle yet
-                let p1 = if n_current_line_vertex == 1 {
-                    [
-                        (prev_positions[4] + (angle - (3.14159 / 2.0)).cos() * line_gl_width.width)
-                            as f32,
-                        (prev_positions[5] + (angle - (3.14159 / 2.0)).sin() * line_gl_width.width)
-                            as f32,
-                    ]
-                } else {
-                    [prev_positions[0] as f32, prev_positions[1] as f32]
-                };
+                if n_current_line_vertex == 1 {
+                    prev_positions[0] =
+                        prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_width.width;
+                    prev_positions[1] =
+                        prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_width.width;
+                    prev_positions[2] =
+                        prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_width.width;
+                    prev_positions[3] =
+                        prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_width.width;
+                }
 
+                // point to the left of the cursor
+                let p1 = [
+                    (cursor.x + (angle - FRAC_PI_2).cos() * line_gl_width.width) as f32,
+                    (cursor.y + (angle - FRAC_PI_2).sin() * line_gl_width.width) as f32,
+                ];
+
+                // point to the right of the cursor
                 let p2 = [
-                    (cursor.x + (angle - (3.14159 / 2.0)).cos() * line_gl_width.width) as f32,
-                    (cursor.y + (angle - (3.14159 / 2.0)).sin() * line_gl_width.width) as f32,
+                    (cursor.x + (angle + FRAC_PI_2).cos() * line_gl_width.width) as f32,
+                    (cursor.y + (angle + FRAC_PI_2).sin() * line_gl_width.width) as f32,
                 ];
 
-                let p3 = [
-                    (cursor.x + (angle + (3.14159 / 2.0)).cos() * line_gl_width.width) as f32,
-                    (cursor.y + (angle + (3.14159 / 2.0)).sin() * line_gl_width.width) as f32,
-                ];
+                // previous p1
+                let p3 = [prev_positions[0] as f32, prev_positions[1] as f32];
 
-                // See p1
-                let p4 = if n_current_line_vertex == 1 {
-                    [
-                        (prev_positions[0] + (angle + (3.14159 / 2.0)).cos() * line_gl_width.width)
-                            as f32,
-                        (prev_positions[1] + (angle + (3.14159 / 2.0)).sin() * line_gl_width.width)
-                            as f32,
-                    ]
-                } else {
-                    [prev_positions[2] as f32, prev_positions[3] as f32]
-                };
+                // previous p2
+                let p4 = [prev_positions[2] as f32, prev_positions[3] as f32];
 
-                prev_positions[0] = p2[0] as f64;
-                prev_positions[1] = p2[1] as f64;
-                prev_positions[2] = p3[0] as f64;
-                prev_positions[3] = p3[1] as f64;
+                prev_positions[0] = p1[0] as f64;
+                prev_positions[1] = p1[1] as f64;
+                prev_positions[2] = p2[0] as f64;
+                prev_positions[3] = p2[1] as f64;
                 prev_positions[4] = cursor.x as f64; // for recalculating the first vertex
                 prev_positions[5] = cursor.y as f64; // for recalculating the first vertex
 
                 if n_current_line_vertex == 0 {
                     // Skip pushing the line segment since we only have the first point available yet
-                    n_current_line_vertex = 1;
                     undo_steps.push(vertex_data.len());
                 } else {
-                    n_current_line_vertex += 1;
-
-                    // 1
-                    vertex_data.push(p1[0]);
-                    vertex_data.push(p1[1]);
+                    // 3
+                    vertex_data.push(p3[0]);
+                    vertex_data.push(p3[1]);
                     vertex_data.push(0.0);
 
                     vertex_data.extend(&current_color);
@@ -531,13 +568,6 @@ fn main() {
 
                     vertex_data.extend(&current_color);
 
-                    // 3
-                    vertex_data.push(p3[0]);
-                    vertex_data.push(p3[1]);
-                    vertex_data.push(0.0);
-
-                    vertex_data.extend(&current_color);
-
                     // 1
                     vertex_data.push(p1[0]);
                     vertex_data.push(p1[1]);
@@ -552,6 +582,13 @@ fn main() {
 
                     vertex_data.extend(&current_color);
 
+                    // 2
+                    vertex_data.push(p2[0]);
+                    vertex_data.push(p2[1]);
+                    vertex_data.push(0.0);
+
+                    vertex_data.extend(&current_color);
+
                     // 4
                     vertex_data.push(p4[0]);
                     vertex_data.push(p4[1]);
@@ -559,6 +596,8 @@ fn main() {
 
                     vertex_data.extend(&current_color);
                 }
+
+                n_current_line_vertex += 1;
             } else {
                 n_current_line_vertex = 0;
             }
@@ -567,7 +606,11 @@ fn main() {
             unsafe {
                 // Start by clearing everything from last frame
                 // ClearColor has to come BEFORE Clear
-                gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                if is_background_visible {
+                    gl::ClearColor(0.0, 0.0, 0.0, 0.8);
+                } else {
+                    gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                }
                 gl::Clear(gl::COLOR_BUFFER_BIT);
 
                 // copy the vertices to the vertex buffer
