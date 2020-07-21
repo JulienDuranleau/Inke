@@ -172,13 +172,12 @@ fn main() {
     let window_size = gl_window.window().inner_size();
     let mut vertex_data = Vec::new(); // List of vertices sent to the vba, 0-64: cursor reticle, 65+: triangles
     let mut current_color = [1.0_f32, 1.0_f32, 1.0_f32];
-    let mut is_first_vertex = true; // Pen just set down for the first frame, will not draw a line yet
-    let mut is_second_vertex = false; // The first line segment is about to be completed with this second vertex
+    let mut n_current_line_vertex = 0;
     let mut pen_is_down = false; // Draw lines when true
     let mut line_width = 5.0; // Line width to draw *in pixels*
     let mut line_width_modifier = 1.0; // Used by pen pressure to change the line_width
     let mut line_gl_width = get_gl_size(line_width * line_width_modifier, window_size); // Line width in gl size (given the screen width is from -1..1)
-    let mut prev_positions = [0.0_f64; 4]; // Previous triangles ending points (old p2.x, p2.y, p3.x, p3.y)
+    let mut prev_positions = [0.0_f64; 6]; // Previous triangles ending points and previous cursor (old p2.x, p2.y, p3.x, p3.y, cursor.x, cursor.y)
     let mut cursor_position = PhysicalPosition::new(0.0, 0.0); // Will hold mouse or tablet position
     let mut need_redraw = false; // Triggers a screen redraw when set to true
     let mut undo_steps: Vec<usize> = Vec::new();
@@ -229,8 +228,7 @@ fn main() {
                                 // Clear drawings
                                 vertex_data.resize(n_cursor_reticle_points * 6, 0.0);
                                 need_redraw = true;
-                                is_first_vertex = true;
-                                is_second_vertex = false;
+                                n_current_line_vertex = 0;
                             }
                             // z
                             44 => {
@@ -241,8 +239,7 @@ fn main() {
                                         Some(n) => {
                                             vertex_data.resize(n, 0.0);
                                             need_redraw = true;
-                                            is_first_vertex = true;
-                                            is_second_vertex = false;
+                                            n_current_line_vertex = 0;
                                         }
                                         None => (),
                                     }
@@ -339,8 +336,7 @@ fn main() {
 
                     if touch_event.phase == TouchPhase::Started {
                         pen_is_down = true;
-                        is_first_vertex = true;
-                        is_second_vertex = false;
+                        n_current_line_vertex = 0;
                     }
                     if touch_event.phase == TouchPhase::Ended
                         || touch_event.phase == TouchPhase::Cancelled
@@ -466,24 +462,37 @@ fn main() {
                 p4: previous cursor + line width
                 */
 
-                // Angle of the line to draw in radians.
+                // Angle in radians of the line to draw
                 // Will be wrong if it's the first vertex since prev_positions isn't defined
-                // but we recalculate it when we get the second vertex
-                let angle = (cursor.y - prev_positions[1]).atan2(cursor.x - prev_positions[0]);
+                // but we recalculate it before drawing when we get the second vertex
+                let angle = (cursor.y - prev_positions[5]).atan2(cursor.x - prev_positions[4]);
 
-                let p1 = [prev_positions[0] as f32, prev_positions[1] as f32];
+                // If it's the second vertex (2nd part of first line segment),
+                // we need to recalculate the width of the first vertex since
+                // we didnt know the angle yet
+                let p1 = if n_current_line_vertex == 1 {
+                    [
+                        (prev_positions[4] + (angle - (3.14159 / 2.0)).cos() * line_gl_width.width)
+                            as f32,
+                        (prev_positions[5] + (angle - (3.14159 / 2.0)).sin() * line_gl_width.width)
+                            as f32,
+                    ]
+                } else {
+                    [prev_positions[0] as f32, prev_positions[1] as f32]
+                };
 
-                let p2 = [cursor.x as f32, cursor.y as f32];
+                let p2 = [
+                    (cursor.x + (angle - (3.14159 / 2.0)).cos() * line_gl_width.width) as f32,
+                    (cursor.y + (angle - (3.14159 / 2.0)).sin() * line_gl_width.width) as f32,
+                ];
 
                 let p3 = [
                     (cursor.x + (angle + (3.14159 / 2.0)).cos() * line_gl_width.width) as f32,
                     (cursor.y + (angle + (3.14159 / 2.0)).sin() * line_gl_width.width) as f32,
                 ];
 
-                // If it's the second vertex (2nd part of first line segment),
-                // we need to recalculate the width of the first vertex since
-                // we didnt know the angle yet
-                let p4 = if is_second_vertex {
+                // See p1
+                let p4 = if n_current_line_vertex == 1 {
                     [
                         (prev_positions[0] + (angle + (3.14159 / 2.0)).cos() * line_gl_width.width)
                             as f32,
@@ -498,13 +507,16 @@ fn main() {
                 prev_positions[1] = p2[1] as f64;
                 prev_positions[2] = p3[0] as f64;
                 prev_positions[3] = p3[1] as f64;
+                prev_positions[4] = cursor.x as f64; // for recalculating the first vertex
+                prev_positions[5] = cursor.y as f64; // for recalculating the first vertex
 
-                if is_first_vertex {
+                if n_current_line_vertex == 0 {
                     // Skip pushing the line segment since we only have the first point available yet
-                    is_first_vertex = false;
-                    is_second_vertex = true;
+                    n_current_line_vertex = 1;
                     undo_steps.push(vertex_data.len());
                 } else {
+                    n_current_line_vertex += 1;
+
                     // 1
                     vertex_data.push(p1[0]);
                     vertex_data.push(p1[1]);
@@ -546,13 +558,9 @@ fn main() {
                     vertex_data.push(0.0);
 
                     vertex_data.extend(&current_color);
-
-                    // ^ Done with the two triangles ^
-
-                    is_second_vertex = false;
                 }
             } else {
-                is_first_vertex = true;
+                n_current_line_vertex = 0;
             }
 
             // GL Draw Phase
