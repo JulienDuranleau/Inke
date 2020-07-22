@@ -39,18 +39,8 @@ fn compile_shader(src: &str, ty: GLenum) -> GLuint {
             gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
             let mut buf = Vec::with_capacity(len as usize);
             buf.set_len((len as usize) - 1); // subtract 1 to skip the trailing null character
-            gl::GetShaderInfoLog(
-                shader,
-                len,
-                ptr::null_mut(),
-                buf.as_mut_ptr() as *mut GLchar,
-            );
-            panic!(
-                "{}",
-                str::from_utf8(&buf)
-                    .ok()
-                    .expect("ShaderInfoLog not valid utf8")
-            );
+            gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
+            panic!("{}", str::from_utf8(&buf).ok().expect("ShaderInfoLog not valid utf8"));
         }
     }
     shader
@@ -72,18 +62,8 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
             gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut len);
             let mut buf = Vec::with_capacity(len as usize);
             buf.set_len((len as usize) - 1); // subtract 1 to skip the trailing null character
-            gl::GetProgramInfoLog(
-                program,
-                len,
-                ptr::null_mut(),
-                buf.as_mut_ptr() as *mut GLchar,
-            );
-            panic!(
-                "{}",
-                str::from_utf8(&buf)
-                    .ok()
-                    .expect("ProgramInfoLog not valid utf8")
-            );
+            gl::GetProgramInfoLog(program, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
+            panic!("{}", str::from_utf8(&buf).ok().expect("ProgramInfoLog not valid utf8"));
         }
         program
     }
@@ -162,11 +142,11 @@ fn main() {
         let color_attr = gl::GetAttribLocation(program, CString::new("vColor").unwrap().as_ptr());
         gl::EnableVertexAttribArray(color_attr as GLuint);
         gl::VertexAttribPointer(
-            color_attr as GLuint,                                 // index of attribute
-            3,                                                    // the number of components
-            gl::FLOAT,                                            // data type
-            gl::FALSE as GLboolean,                               // normalized
-            (6 * std::mem::size_of::<f32>()) as gl::types::GLint, // stride (byte offset)
+            color_attr as GLuint,                                         // index of attribute
+            3,                                                            // the number of components
+            gl::FLOAT,                                                    // data type
+            gl::FALSE as GLboolean,                                       // normalized
+            (6 * std::mem::size_of::<f32>()) as gl::types::GLint,         // stride (byte offset)
             (3 * std::mem::size_of::<f32>()) as *const gl::types::GLvoid, // offset of the first component
         );
     }
@@ -365,9 +345,7 @@ fn main() {
                         pen_is_down = true;
                         n_current_line_vertex = 0;
                     }
-                    if touch_event.phase == TouchPhase::Ended
-                        || touch_event.phase == TouchPhase::Cancelled
-                    {
+                    if touch_event.phase == TouchPhase::Ended || touch_event.phase == TouchPhase::Cancelled {
                         pen_is_down = false;
                     }
 
@@ -508,14 +486,10 @@ fn main() {
                 // we need to recalculate the width of the first vertex since
                 // we didnt know the angle yet
                 if n_current_line_vertex == 1 {
-                    prev_positions[0] =
-                        prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_width.width;
-                    prev_positions[1] =
-                        prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_width.width;
-                    prev_positions[2] =
-                        prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_width.width;
-                    prev_positions[3] =
-                        prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_width.width;
+                    prev_positions[0] = prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_width.width;
+                    prev_positions[1] = prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_width.width;
+                    prev_positions[2] = prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_width.width;
+                    prev_positions[3] = prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_width.width;
                 }
 
                 // point to the left of the cursor
@@ -629,11 +603,7 @@ fn main() {
                     // Divide by 6 since each vertex has 3 floats for pos + 3 for color
                     let n_line_vertices = vertex_data.len() / 6 - n_cursor_reticle_points;
                     if n_line_vertices > 0 {
-                        gl::DrawArrays(
-                            gl::TRIANGLES,
-                            n_cursor_reticle_points as i32,
-                            n_line_vertices as i32,
-                        );
+                        gl::DrawArrays(gl::TRIANGLES, n_cursor_reticle_points as i32, n_line_vertices as i32);
                     }
                 }
             }
