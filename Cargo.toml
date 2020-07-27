@@ -2,7 +2,7 @@
 name = "Inke"
 version = "1.0.0"
 authors = ["Julien Duranleau <julien.duranleau@gmail.com>"]
-edition = "2020"
+edition = "2018"
 
 [dependencies]
 gl = "0.14.0"
