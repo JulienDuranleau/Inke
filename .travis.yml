@@ -24,6 +24,7 @@ matrix:
   - name: Linux Binary
     env: TARGET=x86_64-unknown-linux-musl TARGET_NAME=Linux
     rust: stable
+    before_script: rustup target add $TARGET
     script: cargo build --release --target $TARGET
     addons:
       apt:
