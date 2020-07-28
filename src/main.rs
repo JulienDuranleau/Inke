@@ -1,5 +1,3 @@
-// https://github.com/Nercury/rust-and-opengl-lessons
-
 #![windows_subsystem = "windows"]
 
 extern crate gl;
@@ -76,22 +74,19 @@ fn get_gl_size(size: f64, window_size: PhysicalSize<u32>) -> PhysicalSize<f64> {
 }
 
 fn main() {
-    // Offset from top left of the screen
-    let screen_position: PhysicalPosition<i32> = PhysicalPosition::new(-5, 0);
-
-    // Size of the overlay (height has -1 to avoid buggy transparency???)
-    let screen_size: PhysicalSize<u32> = PhysicalSize::new(1920, 1080 - 1);
-
     let event_loop = glutin::event_loop::EventLoop::new();
 
+    // Size of the overlay (height has -1 to avoid buggy transparency???)
+    let original_screen_size = event_loop.primary_monitor().size();
+    let screen_size: PhysicalSize<u32> = PhysicalSize::new(original_screen_size.width, original_screen_size.height - 1);
+
     let window_builder = glutin::window::WindowBuilder::new()
-        .with_title("Whiteboard")
+        .with_title("Inke")
         .with_inner_size(screen_size)
         .with_decorations(false)
         .with_transparent(true)
         .with_resizable(false)
-        .with_visible(false)
-        .with_always_on_top(true);
+        .with_visible(false);
 
     let gl_window = glutin::ContextBuilder::new()
         .with_multisampling(8)
@@ -100,7 +95,7 @@ fn main() {
 
     let gl_window = unsafe { gl_window.make_current() }.unwrap();
 
-    gl_window.window().set_outer_position(screen_position);
+    gl_window.window().set_outer_position(PhysicalPosition::new(0, 0));
     gl_window.window().set_visible(true);
 
     // Load the OpenGL function pointers
@@ -159,7 +154,6 @@ fn main() {
     let mut pen_is_down = false; // Draw lines when true
     let mut line_width = 5.0; // Line width to draw *in pixels*
     let mut line_width_modifier = 1.0; // Used by pen pressure to change the line_width
-    let mut line_gl_width = get_gl_size(line_width * line_width_modifier, window_size); // Line width in gl size (given the screen width is from -1..1)
     let mut prev_positions = [0.0_f64; 6]; // Previous triangles ending points and previous cursor (old p1.x, p1.y, p2.x, p2.y, cursor.x, cursor.y)
     let mut cursor_position = PhysicalPosition::new(0.0, 0.0); // Will hold mouse or tablet position
     let mut need_redraw = false; // Triggers a screen redraw when set to true
@@ -441,13 +435,14 @@ fn main() {
             );
 
             // update line width in gl scale
-            line_gl_width = get_gl_size(line_width * line_width_modifier, window_size);
+            let line_gl_width = get_gl_size(line_width * line_width_modifier, window_size);
+            let cursor_gl_size = get_gl_size(line_width, window_size);
 
             // Cursor circle overlay
             for i in 0..n_cursor_reticle_points {
                 let angle = (i as f64) / 32.0 * (2.0 * PI);
-                vertex_data[i * 6 + 0] = (cursor.x + (angle.cos() * line_gl_width.width)) as f32;
-                vertex_data[i * 6 + 1] = (cursor.y + (angle.sin() * line_gl_width.height)) as f32;
+                vertex_data[i * 6 + 0] = (cursor.x + (angle.cos() * cursor_gl_size.width)) as f32;
+                vertex_data[i * 6 + 1] = (cursor.y + (angle.sin() * cursor_gl_size.height)) as f32;
                 // skip z  [i * 6 + 2]
                 vertex_data[i * 6 + 3] = current_color[0];
                 vertex_data[i * 6 + 4] = current_color[1];

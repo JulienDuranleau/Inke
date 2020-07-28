@@ -323,6 +323,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "inke"
+version = "1.0.0"
+dependencies = [
+ "gl",
+ "glutin",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -895,14 +903,6 @@ checksum = "d94e89a86e6d6d7c7c9b19ebf48a03afaac4af6bc22ae570e9a24124b75358f4"
 dependencies = [
  "dlib",
  "lazy_static",
-]
-
-[[package]]
-name = "whiteboard"
-version = "0.1.0"
-dependencies = [
- "gl",
- "glutin",
 ]
 
 [[package]]
