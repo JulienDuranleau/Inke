@@ -12,7 +12,7 @@ DEPLOY_TO_GITHUB: &DEPLOY_TO_GITHUB
   deploy:
     provider: releases
     api_key: '$GITHUB_API_KEY'
-    file: inke-$TRAVIS_TAG-$TARGET.tar.gz
+    file: inke-$TRAVIS_TAG-$TARGET_NAME.tar.gz
     skip_cleanup: true
     on:
       branch: master
