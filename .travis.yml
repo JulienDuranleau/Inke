@@ -26,10 +26,14 @@ matrix:
     rust: stable
     before_script: rustup target add $TARGET
     script: cargo build --release --target $TARGET
+    addons:
+      apt:
+        packages:
+          - musl-tools
     <<: *DEPLOY_TO_GITHUB
 
   - name: macOS Binary
-    env: MACOSX_DEPLOYMENT_TARGET=10.7 TARGET=x86_64-apple-darwin
+    env: MACOSX_DEPLOYMENT_TARGET=10.14 TARGET=x86_64-apple-darwin
     os: osx
     rust: stable
     script: cargo build --release --target $TARGET
