@@ -67,22 +67,43 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
-fn get_gl_size(size: f64, window_size: PhysicalSize<u32>) -> PhysicalSize<f64> {
-    let window_height_ratio = (window_size.width as f64) / (window_size.height as f64);
-    let w = size / (window_size.width as f64) * 2.0;
+fn get_gl_size(size: f64, overlay_size: PhysicalSize<u32>) -> PhysicalSize<f64> {
+    let window_height_ratio = (overlay_size.width as f64) / (overlay_size.height as f64);
+    let w = size / (overlay_size.width as f64) * 2.0;
     PhysicalSize::new(w, w * window_height_ratio)
 }
 
 fn main() {
     let event_loop = glutin::event_loop::EventLoop::new();
 
-    // Size of the overlay (height has -1 to avoid buggy transparency???)
-    let original_screen_size = event_loop.primary_monitor().size();
-    let screen_size: PhysicalSize<u32> = PhysicalSize::new(original_screen_size.width, original_screen_size.height - 1);
+    let mut min_x = 0;
+    let mut min_y = 0;
+    let mut total_width = 0;
+    let mut total_height = 0;
+
+    let monitors = event_loop.available_monitors();
+
+    for monitor in monitors {
+        if monitor.position().x < min_x {
+            min_x = monitor.position().x;
+        }
+        if monitor.position().y < min_y {
+            min_y = monitor.position().y;
+        }
+        if monitor.size().height > total_height {
+            total_height = monitor.size().height;
+        }
+        total_width += monitor.size().width;
+    }
+
+    total_height += min_y.abs() as u32;
+
+    let overlay_size: PhysicalSize<u32> = PhysicalSize::new(total_width, total_height);
+    let overlay_position = PhysicalPosition::new(min_x, min_y);
 
     let window_builder = glutin::window::WindowBuilder::new()
         .with_title("Inke")
-        .with_inner_size(screen_size)
+        .with_inner_size(overlay_size)
         .with_decorations(false)
         .with_transparent(true)
         .with_resizable(false)
@@ -95,7 +116,7 @@ fn main() {
 
     let gl_window = unsafe { gl_window.make_current() }.unwrap();
 
-    gl_window.window().set_outer_position(PhysicalPosition::new(0, 0));
+    gl_window.window().set_outer_position(overlay_position);
     gl_window.window().set_visible(true);
 
     // Load the OpenGL function pointers
@@ -147,7 +168,6 @@ fn main() {
     }
 
     let n_cursor_reticle_points = 32;
-    let window_size = gl_window.window().inner_size();
     let mut vertex_data = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
     let mut current_color = [1.0_f32, 1.0_f32, 1.0_f32]; // rgb of the line to draw. Also used by the cursor reticle
     let mut n_current_line_vertex = 0; // Number of vertices in the current line
@@ -430,13 +450,13 @@ fn main() {
             need_redraw = false;
 
             let cursor = PhysicalPosition::new(
-                cursor_position.x / (window_size.width as f64) * 2.0 - 1.0,
-                cursor_position.y / (window_size.height as f64) * -2.0 + 1.0,
+                cursor_position.x / (overlay_size.width as f64) * 2.0 - 1.0,
+                cursor_position.y / (overlay_size.height as f64) * -2.0 + 1.0,
             );
 
             // update line width in gl scale
-            let line_gl_width = get_gl_size(line_width * line_width_modifier, window_size);
-            let cursor_gl_size = get_gl_size(line_width, window_size);
+            let line_gl_size = get_gl_size(line_width * line_width_modifier, overlay_size);
+            let cursor_gl_size = get_gl_size(line_width, overlay_size);
 
             // Cursor circle overlay
             for i in 0..n_cursor_reticle_points {
@@ -481,22 +501,22 @@ fn main() {
                 // we need to recalculate the width of the first vertex since
                 // we didnt know the angle yet
                 if n_current_line_vertex == 1 {
-                    prev_positions[0] = prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_width.width;
-                    prev_positions[1] = prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_width.width;
-                    prev_positions[2] = prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_width.width;
-                    prev_positions[3] = prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_width.width;
+                    prev_positions[0] = prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_size.width;
+                    prev_positions[1] = prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_size.height;
+                    prev_positions[2] = prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_size.width;
+                    prev_positions[3] = prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_size.height;
                 }
 
                 // point to the left of the cursor
                 let p1 = [
-                    (cursor.x + (angle - FRAC_PI_2).cos() * line_gl_width.width) as f32,
-                    (cursor.y + (angle - FRAC_PI_2).sin() * line_gl_width.width) as f32,
+                    (cursor.x + (angle - FRAC_PI_2).cos() * line_gl_size.width) as f32,
+                    (cursor.y + (angle - FRAC_PI_2).sin() * line_gl_size.height) as f32,
                 ];
 
                 // point to the right of the cursor
                 let p2 = [
-                    (cursor.x + (angle + FRAC_PI_2).cos() * line_gl_width.width) as f32,
-                    (cursor.y + (angle + FRAC_PI_2).sin() * line_gl_width.width) as f32,
+                    (cursor.x + (angle + FRAC_PI_2).cos() * line_gl_size.width) as f32,
+                    (cursor.y + (angle + FRAC_PI_2).sin() * line_gl_size.height) as f32,
                 ];
 
                 // previous p1
