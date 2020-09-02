@@ -11,7 +11,7 @@ use std::ptr;
 use std::str;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
-use glutin::event::{ElementState, Event, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use glutin::event::{ElementState, Event, MouseButton, MouseScrollDelta, TouchPhase, VirtualKeyCode, WindowEvent};
 use glutin::event_loop::ControlFlow;
 
 // Shader sources
@@ -210,7 +210,7 @@ fn main() {
                     }
                 }
                 WindowEvent::ModifiersChanged(modifier) => {
-                    ctrl_is_down = modifier.ctrl();
+                    ctrl_is_down = modifier.ctrl() || modifier.logo();
                 }
                 WindowEvent::KeyboardInput {
                     device_id: _,
@@ -220,9 +220,9 @@ fn main() {
                     if input.state == glutin::event::ElementState::Released {
                         // println!("{}", input.scancode);
 
-                        match input.scancode {
+                        match input.virtual_keycode.unwrap() {
                             // escape
-                            1 => {
+                            VirtualKeyCode::Escape => {
                                 // Todo: Request close event
                                 unsafe {
                                     gl::DeleteProgram(program);
@@ -233,26 +233,22 @@ fn main() {
                                 }
                                 *control_flow = ControlFlow::Exit
                             }
-                            // h
-                            35 => {
+                            VirtualKeyCode::H => {
                                 need_redraw = true;
                                 is_window_hidden = !is_window_hidden;
                             }
-                            // b
-                            48 => {
+                            VirtualKeyCode::B => {
                                 // Toggle background
                                 need_redraw = true;
                                 is_background_visible = !is_background_visible;
                             }
-                            // spacebar
-                            57 => {
+                            VirtualKeyCode::Space => {
                                 // Clear drawings
                                 need_redraw = true;
                                 vertex_data.resize(n_cursor_reticle_points * 6, 0.0);
                                 n_current_line_vertex = 0;
                             }
-                            // z
-                            44 => {
+                            VirtualKeyCode::Z => {
                                 // ctrl-z
                                 if ctrl_is_down {
                                     // Undo (if any undo steps are available)
@@ -270,56 +266,56 @@ fn main() {
                             // q,w,e,r,... for line colors
 
                             // q (white)
-                            16 => {
+                            VirtualKeyCode::Q => {
                                 current_color[0] = 1.0;
                                 current_color[1] = 1.0;
                                 current_color[2] = 1.0;
                                 need_redraw = true;
                             }
                             // w (black)
-                            17 => {
+                            VirtualKeyCode::W => {
                                 current_color[0] = 0.05;
                                 current_color[1] = 0.05;
                                 current_color[2] = 0.05;
                                 need_redraw = true;
                             }
                             // e (orange)
-                            18 => {
+                            VirtualKeyCode::E => {
                                 current_color[0] = 1.0;
                                 current_color[1] = 0.58;
                                 current_color[2] = 0.0;
                                 need_redraw = true;
                             }
-                            // e (pink)
-                            19 => {
+                            // r (pink)
+                            VirtualKeyCode::R => {
                                 current_color[0] = 1.0;
                                 current_color[1] = 0.0;
                                 current_color[2] = 0.86;
                                 need_redraw = true;
                             }
-                            // r (red)
-                            20 => {
+                            // t (red)
+                            VirtualKeyCode::T => {
                                 current_color[0] = 1.0;
                                 current_color[1] = 0.2;
                                 current_color[2] = 0.2;
                                 need_redraw = true;
                             }
-                            // t (green)
-                            21 => {
+                            // y (green)
+                            VirtualKeyCode::Y => {
                                 current_color[0] = 0.1;
                                 current_color[1] = 1.0;
                                 current_color[2] = 0.3;
                                 need_redraw = true;
                             }
-                            // y (blue)
-                            22 => {
+                            // u (blue)
+                            VirtualKeyCode::U => {
                                 current_color[0] = 0.1;
                                 current_color[1] = 0.3;
                                 current_color[2] = 1.0;
                                 need_redraw = true;
                             }
                             // u (yellow)
-                            23 => {
+                            VirtualKeyCode::I => {
                                 current_color[0] = 1.0;
                                 current_color[1] = 1.0;
                                 current_color[2] = 0.0;
@@ -327,23 +323,23 @@ fn main() {
                             }
 
                             // 1,2,3,... for size
-                            2 => {
+                            VirtualKeyCode::Key1 => {
                                 line_width = 1.0;
                                 need_redraw = true;
                             }
-                            3 => {
+                            VirtualKeyCode::Key2 => {
                                 line_width = 3.0;
                                 need_redraw = true;
                             }
-                            4 => {
+                            VirtualKeyCode::Key3 => {
                                 line_width = 5.0;
                                 need_redraw = true;
                             }
-                            5 => {
+                            VirtualKeyCode::Key4 => {
                                 line_width = 10.0;
                                 need_redraw = true;
                             }
-                            6 => {
+                            VirtualKeyCode::Key5 => {
                                 line_width = 30.0;
                                 need_redraw = true;
                             }
@@ -421,9 +417,6 @@ fn main() {
                                 line_width -= y as f64;
                                 if line_width < 1.0 {
                                     line_width = 1.0;
-                                }
-                                if line_width > 15.0 {
-                                    line_width = 30.0;
                                 }
                             }
                             _ => (),
