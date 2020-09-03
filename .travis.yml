@@ -1,10 +1,10 @@
 language: rust
 sudo: false
 
-DEPLOY_TO_GITHUB: &DEPLOY_TO_GITHUB
+DEPLOY_TO_GITHUB_LINUX: &DEPLOY_TO_GITHUB_LINUX
   before_deploy:
     - git config --local user.name "Julien Duranleau"
-    - git config --local user.email "julien.duranleau@hotmail.com"
+    - git config --local user.email "julien_duranleau@hotmail.com"
     - name="inke-$TRAVIS_TAG-$TARGET_NAME"
     - mkdir $name
     - cp target/$TARGET/release/inke $name/
@@ -13,6 +13,41 @@ DEPLOY_TO_GITHUB: &DEPLOY_TO_GITHUB
     provider: releases
     api_key: '$GITHUB_API_KEY'
     file: inke-$TRAVIS_TAG-$TARGET_NAME.tar.gz
+    skip_cleanup: true
+    on:
+      branch: master
+      tags: true
+
+DEPLOY_TO_GITHUB_OSX: &DEPLOY_TO_GITHUB_OSX
+  before_deploy:
+    - git config --local user.name "Julien Duranleau"
+    - git config --local user.email "julien_duranleau@hotmail.com"
+    - name="inke-$TRAVIS_TAG-$TARGET_NAME"
+    - mkdir $name.app
+    - mkdir $name.app/Contents
+    - cp target/$TARGET/release/inke $name.app/Contents/
+    - zip -r $name.zip $name.app
+  deploy:
+    provider: releases
+    api_key: '$GITHUB_API_KEY'
+    file: inke-$TRAVIS_TAG-$TARGET_NAME.zip
+    skip_cleanup: true
+    on:
+      branch: master
+      tags: true
+
+DEPLOY_TO_GITHUB_WINDOWS: &DEPLOY_TO_GITHUB_WINDOWS
+  before_deploy:
+    - git config --local user.name "Julien Duranleau"
+    - git config --local user.email "julien_duranleau@hotmail.com"
+    - name="inke-$TRAVIS_TAG-$TARGET_NAME"
+    - mkdir $name
+    - cp target/$TARGET/release/inke $name/
+    - zip -r $name.zip $name
+  deploy:
+    provider: releases
+    api_key: '$GITHUB_API_KEY'
+    file: inke-$TRAVIS_TAG-$TARGET_NAME.zip
     skip_cleanup: true
     on:
       branch: master
@@ -30,7 +65,7 @@ matrix:
       apt:
         packages:
           - musl-tools
-    <<: *DEPLOY_TO_GITHUB
+    <<: *DEPLOY_TO_GITHUB_LINUX
 
   - name: macOS Binary
     env: MACOSX_DEPLOYMENT_TARGET=10.14 TARGET=x86_64-apple-darwin TARGET_NAME=MacOSX
@@ -38,7 +73,7 @@ matrix:
     rust: stable
     script: cargo build --release --target $TARGET
     install: true
-    <<: *DEPLOY_TO_GITHUB
+    <<: *DEPLOY_TO_GITHUB_OSX
 
   - name: Windows Binary
     env: TARGET=x86_64-pc-windows-msvc TARGET_NAME=Windows
@@ -46,4 +81,4 @@ matrix:
     rust: stable
     script: cargo build --release --target $TARGET
     install: true
-    <<: *DEPLOY_TO_GITHUB
+    <<: *DEPLOY_TO_GITHUB_WINDOWS
