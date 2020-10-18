@@ -11,8 +11,13 @@ use std::ptr;
 use std::str;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
-use glutin::event::{ElementState, Event, MouseButton, MouseScrollDelta, TouchPhase, VirtualKeyCode, WindowEvent};
-use glutin::event_loop::ControlFlow;
+use glutin::event::{
+    ElementState, Event, MouseButton, MouseScrollDelta, TouchPhase, VirtualKeyCode, WindowEvent,
+};
+use glutin::event_loop::{ControlFlow, EventLoop};
+use glutin::monitor::MonitorHandle;
+use glutin::window::Window;
+use glutin::ContextWrapper;
 
 // Shader sources
 static VS_SRC: &'static str = include_str!("shader.vert");
@@ -31,11 +36,40 @@ struct Cursor {
     pressed: bool,
 }
 
+#[allow(dead_code)]
+struct Point2D {
+    x: f64,
+    y: f64,
+}
+
+#[allow(dead_code)]
+struct Point {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+struct Rect2D {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
 struct LineStyle {
     color: [f32; 3],
     width: f64,
     pressure: f64,
     smoothing: usize,
+}
+
+struct GLCtx {
+    context: ContextWrapper<glutin::PossiblyCurrent, Window>,
+    program: u32,
+    fs: u32,
+    vs: u32,
+    vao: u32,
+    vbo: u32,
 }
 
 fn compile_shader(src: &str, ty: GLenum) -> GLuint {
@@ -57,8 +91,18 @@ fn compile_shader(src: &str, ty: GLenum) -> GLuint {
             gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
             let mut buf = Vec::with_capacity(len as usize);
             buf.set_len((len as usize) - 1); // subtract 1 to skip the trailing null character
-            gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
-            panic!("{}", str::from_utf8(&buf).ok().expect("ShaderInfoLog not valid utf8"));
+            gl::GetShaderInfoLog(
+                shader,
+                len,
+                ptr::null_mut(),
+                buf.as_mut_ptr() as *mut GLchar,
+            );
+            panic!(
+                "{}",
+                str::from_utf8(&buf)
+                    .ok()
+                    .expect("ShaderInfoLog not valid utf8")
+            );
         }
     }
     shader
@@ -80,27 +124,109 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
             gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut len);
             let mut buf = Vec::with_capacity(len as usize);
             buf.set_len((len as usize) - 1); // subtract 1 to skip the trailing null character
-            gl::GetProgramInfoLog(program, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
-            panic!("{}", str::from_utf8(&buf).ok().expect("ProgramInfoLog not valid utf8"));
+            gl::GetProgramInfoLog(
+                program,
+                len,
+                ptr::null_mut(),
+                buf.as_mut_ptr() as *mut GLchar,
+            );
+            panic!(
+                "{}",
+                str::from_utf8(&buf)
+                    .ok()
+                    .expect("ProgramInfoLog not valid utf8")
+            );
         }
         program
     }
 }
 
-fn get_gl_size(size: f64, overlay_size: PhysicalSize<u32>) -> PhysicalSize<f64> {
-    let window_height_ratio = (overlay_size.width as f64) / (overlay_size.height as f64);
-    let w = size / (overlay_size.width as f64) * 2.0;
+fn gl_size(size: f64, overlay_rect: &Rect2D) -> PhysicalSize<f64> {
+    let window_height_ratio = (overlay_rect.width as f64) / (overlay_rect.height as f64);
+    let w = size / (overlay_rect.width as f64) * 2.0;
     PhysicalSize::new(w, w * window_height_ratio)
 }
 
-//
-/**
- *
- *
- */
+fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLCtx {
+    let window_builder = glutin::window::WindowBuilder::new()
+        .with_title("Inke")
+        .with_inner_size(PhysicalSize::new(overlay_rect.width, overlay_rect.height))
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_resizable(false)
+        .with_visible(false);
+
+    let gl_window = glutin::ContextBuilder::new()
+        .with_multisampling(8)
+        .build_windowed(window_builder, &event_loop)
+        .unwrap();
+
+    let gl_window = unsafe { gl_window.make_current() }.unwrap();
+
+    gl_window
+        .window()
+        .set_outer_position(PhysicalPosition::new(overlay_rect.x, overlay_rect.y));
+    gl_window.window().set_visible(true);
+
+    // Load the OpenGL function pointers
+    gl::load_with(|symbol| gl_window.get_proc_address(symbol));
+
+    let vs = compile_shader(VS_SRC, gl::VERTEX_SHADER);
+    let fs = compile_shader(FS_SRC, gl::FRAGMENT_SHADER);
+    let program = link_program(vs, fs);
+
+    let mut vao = 0;
+    let mut vbo = 0;
+
+    unsafe {
+        // Create Vertex Array Object
+        gl::GenVertexArrays(1, &mut vao);
+        gl::BindVertexArray(vao);
+
+        // Create Vertex Buffer Object
+        gl::GenBuffers(1, &mut vbo);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+
+        // Use shader program
+        gl::UseProgram(program);
+        gl::BindFragDataLocation(program, 0, CString::new("out_color").unwrap().as_ptr());
+
+        // position attrib
+        let pos_attr = gl::GetAttribLocation(program, CString::new("position").unwrap().as_ptr());
+        gl::EnableVertexAttribArray(pos_attr as GLuint);
+        gl::VertexAttribPointer(
+            pos_attr as GLuint,                                   // index of attribute
+            3,                                                    // the number of components
+            gl::FLOAT,                                            // data type
+            gl::FALSE as GLboolean,                               // normalized
+            (6 * std::mem::size_of::<f32>()) as gl::types::GLint, // stride (byte offset)
+            ptr::null(),                                          // offset of the first component
+        );
+
+        // vertex_color attrib
+        let color_attr = gl::GetAttribLocation(program, CString::new("vColor").unwrap().as_ptr());
+        gl::EnableVertexAttribArray(color_attr as GLuint);
+        gl::VertexAttribPointer(
+            color_attr as GLuint,                                 // index of attribute
+            3,                                                    // the number of components
+            gl::FLOAT,                                            // data type
+            gl::FALSE as GLboolean,                               // normalized
+            (6 * std::mem::size_of::<f32>()) as gl::types::GLint, // stride (byte offset)
+            (3 * std::mem::size_of::<f32>()) as *const gl::types::GLvoid, // offset of the first component
+        );
+    };
+
+    GLCtx {
+        context: gl_window,
+        program: program,
+        vs: vs,
+        fs: fs,
+        vbo: vbo,
+        vao: vao,
+    }
+}
 
 /// Apply line smoothing to parts of a point list
-///
 ///
 /// Reference: https://stackoverflow.com/a/18830268
 fn apply_line_smoothing(points: &mut [f32], intensity: usize) {
@@ -111,7 +237,11 @@ fn apply_line_smoothing(points: &mut [f32], intensity: usize) {
     // skip first
     for i in 1..n_points {
         let start = if i >= intensity { i - intensity } else { 0 };
-        let end = if i + intensity < n_points { i + intensity } else { n_points };
+        let end = if i + intensity < n_points {
+            i + intensity
+        } else {
+            n_points
+        };
 
         // sums for left side of line (p3, p1)
         let mut sum_x1 = 0.0_f32;
@@ -171,15 +301,11 @@ fn apply_line_smoothing(points: &mut [f32], intensity: usize) {
     }
 }
 
-fn main() {
-    let event_loop = glutin::event_loop::EventLoop::new();
-
-    let mut min_x = 0;
-    let mut min_y = 0;
-    let mut total_width = 0;
-    let mut total_height = 0;
-
-    let monitors = event_loop.available_monitors();
+fn get_overlay_rect(monitors: impl Iterator<Item = MonitorHandle>) -> Rect2D {
+    let mut min_x: i32 = 0;
+    let mut min_y: i32 = 0;
+    let mut total_width: u32 = 0;
+    let mut total_height: u32 = 0;
 
     for monitor in monitors {
         if monitor.position().x < min_x {
@@ -196,74 +322,18 @@ fn main() {
 
     total_height += min_y.abs() as u32;
 
-    let overlay_size: PhysicalSize<u32> = PhysicalSize::new(total_width, total_height);
-    let overlay_position = PhysicalPosition::new(min_x, min_y);
-
-    let window_builder = glutin::window::WindowBuilder::new()
-        .with_title("Inke")
-        .with_inner_size(overlay_size)
-        .with_decorations(false)
-        .with_transparent(true)
-        .with_resizable(false)
-        .with_visible(false);
-
-    let gl_window = glutin::ContextBuilder::new()
-        .with_multisampling(8)
-        .build_windowed(window_builder, &event_loop)
-        .unwrap();
-
-    let gl_window = unsafe { gl_window.make_current() }.unwrap();
-
-    gl_window.window().set_outer_position(overlay_position);
-    gl_window.window().set_visible(true);
-
-    // Load the OpenGL function pointers
-    gl::load_with(|symbol| gl_window.get_proc_address(symbol));
-
-    let vs = compile_shader(VS_SRC, gl::VERTEX_SHADER);
-    let fs = compile_shader(FS_SRC, gl::FRAGMENT_SHADER);
-    let program = link_program(vs, fs);
-
-    let mut vao = 0;
-    let mut vbo = 0;
-
-    unsafe {
-        // Create Vertex Array Object
-        gl::GenVertexArrays(1, &mut vao);
-        gl::BindVertexArray(vao);
-
-        // Create Vertex Buffer Object
-        gl::GenBuffers(1, &mut vbo);
-        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-
-        // Use shader program
-        gl::UseProgram(program);
-        gl::BindFragDataLocation(program, 0, CString::new("out_color").unwrap().as_ptr());
-
-        // position attrib
-        let pos_attr = gl::GetAttribLocation(program, CString::new("position").unwrap().as_ptr());
-        gl::EnableVertexAttribArray(pos_attr as GLuint);
-        gl::VertexAttribPointer(
-            pos_attr as GLuint,                                   // index of attribute
-            3,                                                    // the number of components
-            gl::FLOAT,                                            // data type
-            gl::FALSE as GLboolean,                               // normalized
-            (6 * std::mem::size_of::<f32>()) as gl::types::GLint, // stride (byte offset)
-            ptr::null(),                                          // offset of the first component
-        );
-
-        // vertex_color attrib
-        let color_attr = gl::GetAttribLocation(program, CString::new("vColor").unwrap().as_ptr());
-        gl::EnableVertexAttribArray(color_attr as GLuint);
-        gl::VertexAttribPointer(
-            color_attr as GLuint,                                         // index of attribute
-            3,                                                            // the number of components
-            gl::FLOAT,                                                    // data type
-            gl::FALSE as GLboolean,                                       // normalized
-            (6 * std::mem::size_of::<f32>()) as gl::types::GLint,         // stride (byte offset)
-            (3 * std::mem::size_of::<f32>()) as *const gl::types::GLvoid, // offset of the first component
-        );
+    Rect2D {
+        x: min_x,
+        y: min_y,
+        width: total_width,
+        height: total_height,
     }
+}
+
+fn main() {
+    let event_loop = glutin::event_loop::EventLoop::new();
+    let overlay_rect = get_overlay_rect(event_loop.available_monitors());
+    let gl_ctx = init_gl_window(&event_loop, &overlay_rect);
 
     let n_cursor_reticle_points = 32;
     let mut cursor_vertex_data = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
@@ -280,8 +350,8 @@ fn main() {
         alt: false,
         logo: false,
     };
+    // Mouse or drawing tablet cursor position and pressed state
     let mut cursor = Cursor {
-        // Holds mouse or tablet position and pressed state
         x: 0.0,
         y: 0.0,
         pressed: false,
@@ -317,7 +387,7 @@ fn main() {
                         is_window_hidden = false;
                     } else {
                         // force window to minimize
-                        gl_window.window().set_minimized(true);
+                        gl_ctx.context.window().set_minimized(true);
                     }
                 }
                 WindowEvent::ModifiersChanged(modifier) => {
@@ -340,11 +410,11 @@ fn main() {
                                     VirtualKeyCode::Escape => {
                                         // Todo: Request close event
                                         unsafe {
-                                            gl::DeleteProgram(program);
-                                            gl::DeleteShader(fs);
-                                            gl::DeleteShader(vs);
-                                            gl::DeleteBuffers(1, &vbo);
-                                            gl::DeleteVertexArrays(1, &vao);
+                                            gl::DeleteProgram(gl_ctx.program);
+                                            gl::DeleteShader(gl_ctx.fs);
+                                            gl::DeleteShader(gl_ctx.vs);
+                                            gl::DeleteBuffers(1, &gl_ctx.vbo);
+                                            gl::DeleteVertexArrays(1, &gl_ctx.vao);
                                         }
                                         *control_flow = ControlFlow::Exit
                                     }
@@ -472,7 +542,9 @@ fn main() {
                         cursor.pressed = true;
                         n_current_line_vertex = 0;
                     }
-                    if touch_event.phase == TouchPhase::Ended || touch_event.phase == TouchPhase::Cancelled {
+                    if touch_event.phase == TouchPhase::Ended
+                        || touch_event.phase == TouchPhase::Cancelled
+                    {
                         cursor.pressed = false;
                     }
 
@@ -497,11 +569,11 @@ fn main() {
                 }
                 WindowEvent::CloseRequested => {
                     unsafe {
-                        gl::DeleteProgram(program);
-                        gl::DeleteShader(fs);
-                        gl::DeleteShader(vs);
-                        gl::DeleteBuffers(1, &vbo);
-                        gl::DeleteVertexArrays(1, &vao);
+                        gl::DeleteProgram(gl_ctx.program);
+                        gl::DeleteShader(gl_ctx.fs);
+                        gl::DeleteShader(gl_ctx.vs);
+                        gl::DeleteBuffers(1, &gl_ctx.vbo);
+                        gl::DeleteVertexArrays(1, &gl_ctx.vao);
                     }
                     *control_flow = ControlFlow::Exit
                 }
@@ -519,7 +591,10 @@ fn main() {
 
                         if cursor.pressed == false && line_style.smoothing > 0 {
                             let start_offset: usize = *undo_steps.last().unwrap();
-                            apply_line_smoothing(&mut lines_vertex_data[start_offset..], line_style.smoothing);
+                            apply_line_smoothing(
+                                &mut lines_vertex_data[start_offset..],
+                                line_style.smoothing,
+                            );
                         }
                     }
                 }
@@ -567,20 +642,22 @@ fn main() {
             need_redraw = false;
 
             let cursor_gl_pos = PhysicalPosition::new(
-                cursor.x / (overlay_size.width as f64) * 2.0 - 1.0,
-                cursor.y / (overlay_size.height as f64) * -2.0 + 1.0,
+                cursor.x / (overlay_rect.width as f64) * 2.0 - 1.0,
+                cursor.y / (overlay_rect.height as f64) * -2.0 + 1.0,
             );
 
             // update line width in gl scale
-            let line_gl_size = get_gl_size(line_style.width * line_style.pressure, overlay_size);
-            let cursor_gl_size = get_gl_size(line_style.width, overlay_size);
-            let cursor_outline_gl_size = get_gl_size(line_style.width + 1.0, overlay_size);
+            let line_gl_size = gl_size(line_style.width * line_style.pressure, &overlay_rect);
+            let cursor_gl_size = gl_size(line_style.width, &overlay_rect);
+            let cursor_outline_gl_size = gl_size(line_style.width + 1.0, &overlay_rect);
 
             // Cursor circle overlay
             for i in 0..n_cursor_reticle_points {
                 let angle = (i as f64) / (n_cursor_reticle_points as f64) * (2.0 * PI);
-                cursor_vertex_data[i * 6 + 0] = (cursor_gl_pos.x + (angle.cos() * cursor_gl_size.width)) as f32;
-                cursor_vertex_data[i * 6 + 1] = (cursor_gl_pos.y + (angle.sin() * cursor_gl_size.height)) as f32;
+                cursor_vertex_data[i * 6 + 0] =
+                    (cursor_gl_pos.x + (angle.cos() * cursor_gl_size.width)) as f32;
+                cursor_vertex_data[i * 6 + 1] =
+                    (cursor_gl_pos.y + (angle.sin() * cursor_gl_size.height)) as f32;
                 // skip z  [i * 6 + 2]
                 cursor_vertex_data[i * 6 + 3] = line_style.color[0];
                 cursor_vertex_data[i * 6 + 4] = line_style.color[1];
@@ -589,8 +666,10 @@ fn main() {
             // // Cursor circle outline
             for i in n_cursor_reticle_points..(n_cursor_reticle_points * 2) {
                 let angle = (i as f64) / (n_cursor_reticle_points as f64) * (2.0 * PI);
-                cursor_vertex_data[i * 6 + 0] = (cursor_gl_pos.x + (angle.cos() * (cursor_outline_gl_size.width))) as f32;
-                cursor_vertex_data[i * 6 + 1] = (cursor_gl_pos.y + (angle.sin() * (cursor_outline_gl_size.height))) as f32;
+                cursor_vertex_data[i * 6 + 0] =
+                    (cursor_gl_pos.x + (angle.cos() * (cursor_outline_gl_size.width))) as f32;
+                cursor_vertex_data[i * 6 + 1] =
+                    (cursor_gl_pos.y + (angle.sin() * (cursor_outline_gl_size.height))) as f32;
                 // skip z  [i * 6 + 2]
                 cursor_vertex_data[i * 6 + 3] = 0.0;
                 cursor_vertex_data[i * 6 + 4] = 0.0;
@@ -623,16 +702,21 @@ fn main() {
                 // Angle in radians of the line to draw
                 // Will be wrong if it's the first vertex since prev_positions isn't defined
                 // but we recalculate it before drawing when we get the second vertex
-                let angle = (cursor_gl_pos.y - prev_positions[5]).atan2(cursor_gl_pos.x - prev_positions[4]);
+                let angle = (cursor_gl_pos.y - prev_positions[5])
+                    .atan2(cursor_gl_pos.x - prev_positions[4]);
 
                 // If it's the second vertex of the line segment,
                 // we need to recalculate the width of the first vertex since
                 // we didnt know the angle yet
                 if n_current_line_vertex == 1 {
-                    prev_positions[0] = prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_size.width;
-                    prev_positions[1] = prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_size.height;
-                    prev_positions[2] = prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_size.width;
-                    prev_positions[3] = prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_size.height;
+                    prev_positions[0] =
+                        prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_size.width;
+                    prev_positions[1] =
+                        prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_size.height;
+                    prev_positions[2] =
+                        prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_size.width;
+                    prev_positions[3] =
+                        prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_size.height;
                 }
 
                 // point to the left of the cursor
@@ -740,7 +824,11 @@ fn main() {
                     gl::LineWidth(2.0);
                     gl::DrawArrays(gl::LINE_LOOP, 0, n_cursor_reticle_points as i32);
                     gl::LineWidth(1.0);
-                    gl::DrawArrays(gl::LINE_LOOP, n_cursor_reticle_points as i32, n_cursor_reticle_points as i32);
+                    gl::DrawArrays(
+                        gl::LINE_LOOP,
+                        n_cursor_reticle_points as i32,
+                        n_cursor_reticle_points as i32,
+                    );
 
                     if lines_vertex_data.len() > 0 {
                         // copy the vertices to the vertex buffer
@@ -761,7 +849,7 @@ fn main() {
                 }
             }
 
-            gl_window.swap_buffers().unwrap();
+            gl_ctx.context.swap_buffers().unwrap();
         }
     });
 }
