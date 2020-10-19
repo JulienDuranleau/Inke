@@ -4,7 +4,7 @@ extern crate gl;
 extern crate glutin;
 
 use gl::types::*;
-use std::f64::consts::{FRAC_PI_2, PI};
+use std::f32::consts::{FRAC_PI_2, PI};
 use std::ffi::CString;
 use std::mem;
 use std::ptr;
@@ -23,6 +23,13 @@ use glutin::ContextWrapper;
 static VS_SRC: &'static str = include_str!("shader.vert");
 static FS_SRC: &'static str = include_str!("shader.frag");
 
+const N_CURSOR_RETICLE_POINTS: usize = 32;
+
+struct Input {
+    modifiers: Modifiers,
+    cursor: Cursor,
+}
+
 struct Modifiers {
     shift: bool,
     ctrl: bool,
@@ -31,45 +38,63 @@ struct Modifiers {
 }
 
 struct Cursor {
-    x: f64,
-    y: f64,
+    x: f32,
+    y: f32,
+    last_x: f32,
+    last_y: f32,
     pressed: bool,
 }
 
-#[allow(dead_code)]
-struct Point2D {
-    x: f64,
-    y: f64,
-}
-
-#[allow(dead_code)]
-struct Point {
-    x: f64,
-    y: f64,
-    z: f64,
-}
-
 struct Rect2D {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+struct Size2D {
+    width: f32,
+    height: f32,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct Point {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+impl Point {
+    fn into_array(&self) -> [f32; 3] {
+        [self.x, self.y, self.z]
+    }
 }
 
 struct LineStyle {
     color: [f32; 3],
-    width: f64,
-    pressure: f64,
+    width: f32,
+    pressure: f32,
     smoothing: usize,
 }
 
-struct GLCtx {
-    context: ContextWrapper<glutin::PossiblyCurrent, Window>,
+struct GLState {
+    window_context: ContextWrapper<glutin::PossiblyCurrent, Window>,
     program: u32,
     fs: u32,
     vs: u32,
     vao: u32,
     vbo: u32,
+}
+
+struct DrawingState {
+    need_redraw: bool,
+    is_window_hidden: bool,
+    is_background_visible: bool,
+    n_points_current_line: u32,
+    line_style: LineStyle,
+    gl_context: GLState,
+    undo_steps: Vec<usize>,
+    vertices: Vec<f32>,
+    rect: Rect2D,
 }
 
 fn compile_shader(src: &str, ty: GLenum) -> GLuint {
@@ -141,13 +166,23 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
-fn gl_size(size: f64, overlay_rect: &Rect2D) -> PhysicalSize<f64> {
-    let window_height_ratio = (overlay_rect.width as f64) / (overlay_rect.height as f64);
-    let w = size / (overlay_rect.width as f64) * 2.0;
-    PhysicalSize::new(w, w * window_height_ratio)
+fn screen_size_to_gl(w: f32, h: f32, overlay_rect: &Rect2D) -> Size2D {
+    Size2D {
+        width: w / overlay_rect.width * 2.0,
+        height: h / overlay_rect.height * 2.0,
+    }
 }
 
-fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLCtx {
+#[allow(dead_code)]
+fn screen_point_to_gl(x: f32, y: f32, overlay_rect: &Rect2D) -> Point {
+    Point {
+        x: x / overlay_rect.width * 2.0,
+        y: y / overlay_rect.height * 2.0,
+        z: 0.0,
+    }
+}
+
+fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLState {
     let window_builder = glutin::window::WindowBuilder::new()
         .with_title("Inke")
         .with_inner_size(PhysicalSize::new(overlay_rect.width, overlay_rect.height))
@@ -216,8 +251,8 @@ fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLCtx {
         );
     };
 
-    GLCtx {
-        context: gl_window,
+    GLState {
+        window_context: gl_window,
         program: program,
         vs: vs,
         fs: fs,
@@ -323,533 +358,577 @@ fn get_overlay_rect(monitors: impl Iterator<Item = MonitorHandle>) -> Rect2D {
     total_height += min_y.abs() as u32;
 
     Rect2D {
-        x: min_x,
-        y: min_y,
-        width: total_width,
-        height: total_height,
+        x: min_x as f32,
+        y: min_y as f32,
+        width: total_width as f32,
+        height: total_height as f32,
     }
+}
+
+fn handle_event(
+    event: Event<()>,
+    control_flow: &mut ControlFlow,
+    drawing: &mut DrawingState,
+    input: &mut Input,
+) -> () {
+    *control_flow = ControlFlow::Wait;
+
+    match event {
+        Event::LoopDestroyed => return,
+        Event::WindowEvent { event, .. } => match event {
+            // Alt-tab in and out
+            WindowEvent::Focused(has_focus) => {
+                if has_focus {
+                    // unhide
+                    drawing.is_window_hidden = false;
+                } else {
+                    // force window to minimize
+                    drawing
+                        .gl_context
+                        .window_context
+                        .window()
+                        .set_minimized(true);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifier) => {
+                input.modifiers.logo = modifier.logo();
+                input.modifiers.alt = modifier.alt();
+                input.modifiers.shift = modifier.shift();
+                input.modifiers.ctrl = modifier.ctrl();
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                input: keyboard_input,
+                is_synthetic: _,
+            } => {
+                if keyboard_input.state == glutin::event::ElementState::Released {
+                    match keyboard_input.virtual_keycode {
+                        None => (),
+                        Some(key) => {
+                            match key {
+                                // escape
+                                VirtualKeyCode::Escape => {
+                                    // Todo: Request close event
+                                    unsafe {
+                                        gl::DeleteProgram(drawing.gl_context.program);
+                                        gl::DeleteShader(drawing.gl_context.fs);
+                                        gl::DeleteShader(drawing.gl_context.vs);
+                                        gl::DeleteBuffers(1, &drawing.gl_context.vbo);
+                                        gl::DeleteVertexArrays(1, &drawing.gl_context.vao);
+                                    }
+                                    *control_flow = ControlFlow::Exit
+                                }
+                                VirtualKeyCode::H => {
+                                    drawing.need_redraw = true;
+                                    // TODO: Show help
+                                }
+                                VirtualKeyCode::B => {
+                                    // Toggle background
+                                    drawing.need_redraw = true;
+                                    drawing.is_background_visible = !drawing.is_background_visible;
+                                }
+                                VirtualKeyCode::Space => {
+                                    // Clear drawings
+                                    drawing.need_redraw = true;
+                                    drawing.vertices.resize(0, 0.0);
+                                    drawing.n_points_current_line = 0;
+                                }
+                                VirtualKeyCode::Z => {
+                                    // ctrl-z or cmd-z
+                                    if input.modifiers.ctrl || input.modifiers.logo {
+                                        // Undo (if any undo steps are available)
+                                        match drawing.undo_steps.pop() {
+                                            Some(n) => {
+                                                drawing.vertices.resize(n, 0.0);
+                                                drawing.need_redraw = true;
+                                                drawing.n_points_current_line = 0;
+                                            }
+                                            None => (),
+                                        }
+                                    }
+                                }
+
+                                // q,w,e,r,... for line colors
+
+                                // q (white)
+                                VirtualKeyCode::Q => {
+                                    drawing.line_style.color[0] = 1.0;
+                                    drawing.line_style.color[1] = 1.0;
+                                    drawing.line_style.color[2] = 1.0;
+                                    drawing.need_redraw = true;
+                                }
+                                // w (black)
+                                VirtualKeyCode::W => {
+                                    drawing.line_style.color[0] = 0.05;
+                                    drawing.line_style.color[1] = 0.05;
+                                    drawing.line_style.color[2] = 0.05;
+                                    drawing.need_redraw = true;
+                                }
+                                // e (orange)
+                                VirtualKeyCode::E => {
+                                    drawing.line_style.color[0] = 1.0;
+                                    drawing.line_style.color[1] = 0.58;
+                                    drawing.line_style.color[2] = 0.0;
+                                    drawing.need_redraw = true;
+                                }
+                                // r (pink)
+                                VirtualKeyCode::R => {
+                                    drawing.line_style.color[0] = 1.0;
+                                    drawing.line_style.color[1] = 0.0;
+                                    drawing.line_style.color[2] = 0.86;
+                                    drawing.need_redraw = true;
+                                }
+                                // t (red)
+                                VirtualKeyCode::T => {
+                                    drawing.line_style.color[0] = 1.0;
+                                    drawing.line_style.color[1] = 0.2;
+                                    drawing.line_style.color[2] = 0.2;
+                                    drawing.need_redraw = true;
+                                }
+                                // y (green)
+                                VirtualKeyCode::Y => {
+                                    drawing.line_style.color[0] = 0.1;
+                                    drawing.line_style.color[1] = 1.0;
+                                    drawing.line_style.color[2] = 0.3;
+                                    drawing.need_redraw = true;
+                                }
+                                // u (blue)
+                                VirtualKeyCode::U => {
+                                    drawing.line_style.color[0] = 0.1;
+                                    drawing.line_style.color[1] = 0.3;
+                                    drawing.line_style.color[2] = 1.0;
+                                    drawing.need_redraw = true;
+                                }
+                                // u (yellow)
+                                VirtualKeyCode::I => {
+                                    drawing.line_style.color[0] = 1.0;
+                                    drawing.line_style.color[1] = 1.0;
+                                    drawing.line_style.color[2] = 0.0;
+                                    drawing.need_redraw = true;
+                                }
+
+                                // 1,2,3,... for size
+                                VirtualKeyCode::Key1 => {
+                                    drawing.line_style.width = 1.0;
+                                    drawing.need_redraw = true;
+                                }
+                                VirtualKeyCode::Key2 => {
+                                    drawing.line_style.width = 3.0;
+                                    drawing.need_redraw = true;
+                                }
+                                VirtualKeyCode::Key3 => {
+                                    drawing.line_style.width = 5.0;
+                                    drawing.need_redraw = true;
+                                }
+                                VirtualKeyCode::Key4 => {
+                                    drawing.line_style.width = 10.0;
+                                    drawing.need_redraw = true;
+                                }
+                                VirtualKeyCode::Key5 => {
+                                    drawing.line_style.width = 30.0;
+                                    drawing.need_redraw = true;
+                                }
+
+                                _ => (),
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::Touch(touch_event) => {
+                drawing.need_redraw = true;
+
+                if touch_event.phase == TouchPhase::Started {
+                    input.cursor.pressed = true;
+                    drawing.n_points_current_line = 0;
+                }
+                if touch_event.phase == TouchPhase::Ended
+                    || touch_event.phase == TouchPhase::Cancelled
+                {
+                    input.cursor.pressed = false;
+                }
+
+                input.cursor.last_x = input.cursor.x;
+                input.cursor.last_y = input.cursor.y;
+                input.cursor.x = touch_event.location.x as f32;
+                input.cursor.y = touch_event.location.y as f32;
+
+                match touch_event.force {
+                    Some(force_type) => match force_type {
+                        glutin::event::Force::Calibrated {
+                            force,
+                            max_possible_force,
+                            altitude_angle: _,
+                        } => {
+                            drawing.line_style.pressure = (force / max_possible_force) as f32;
+                        }
+                        glutin::event::Force::Normalized(force) => {
+                            drawing.line_style.pressure = force as f32;
+                        }
+                    },
+                    None => (),
+                }
+            }
+            WindowEvent::CloseRequested => {
+                unsafe {
+                    gl::DeleteProgram(drawing.gl_context.program);
+                    gl::DeleteShader(drawing.gl_context.fs);
+                    gl::DeleteShader(drawing.gl_context.vs);
+                    gl::DeleteBuffers(1, &drawing.gl_context.vbo);
+                    gl::DeleteVertexArrays(1, &drawing.gl_context.vao);
+                }
+                *control_flow = ControlFlow::Exit
+            }
+            // Mouse pressed
+            // deprecated is for modifiers
+            #[allow(deprecated)]
+            WindowEvent::MouseInput {
+                device_id: _,
+                state,
+                button,
+                modifiers: _,
+            } => {
+                if button == MouseButton::Left {
+                    input.cursor.pressed = state == ElementState::Pressed;
+
+                    if input.cursor.pressed == false && drawing.line_style.smoothing > 0 {
+                        let start_offset: usize = *drawing.undo_steps.last().unwrap();
+                        apply_line_smoothing(
+                            &mut drawing.vertices[start_offset..],
+                            drawing.line_style.smoothing,
+                        );
+                    }
+                }
+            }
+            // Mousewheel
+            // deprecated is for modifiers
+            #[allow(deprecated)]
+            WindowEvent::MouseWheel {
+                device_id: _,
+                delta,
+                phase,
+                modifiers: _,
+            } => {
+                if phase == TouchPhase::Moved {
+                    match delta {
+                        MouseScrollDelta::LineDelta(_x, y) => {
+                            drawing.need_redraw = true;
+
+                            drawing.line_style.width -= y;
+                            if drawing.line_style.width < 1.0 {
+                                drawing.line_style.width = 1.0;
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            // Mouse moved
+            // deprecated is for modifiers
+            #[allow(deprecated)]
+            WindowEvent::CursorMoved {
+                device_id: _,
+                position,
+                modifiers: _,
+            } => {
+                input.cursor.last_x = input.cursor.x;
+                input.cursor.last_y = input.cursor.y;
+                input.cursor.x = position.x as f32;
+                input.cursor.y = position.y as f32;
+                drawing.need_redraw = true;
+            }
+            _ => (),
+        },
+        _ => (),
+    }
+}
+
+fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f32>) {
+    let prev_cursor_gl_pos = Point {
+        x: input.cursor.last_x / drawing.rect.width * 2.0 - 1.0,
+        y: input.cursor.last_y / drawing.rect.height * -2.0 + 1.0,
+        z: 0.0,
+    };
+    let cursor_gl_pos = Point {
+        x: input.cursor.x / drawing.rect.width * 2.0 - 1.0,
+        y: input.cursor.y / drawing.rect.height * -2.0 + 1.0,
+        z: 0.0,
+    };
+
+    let cursor_gl_size = screen_size_to_gl(
+        drawing.line_style.width,
+        drawing.line_style.width,
+        &drawing.rect,
+    );
+    let cursor_outline_gl_size = screen_size_to_gl(
+        drawing.line_style.width + 1.0,
+        drawing.line_style.width + 1.0,
+        &drawing.rect,
+    );
+
+    // Cursor circle overlay
+    for i in 0..N_CURSOR_RETICLE_POINTS {
+        let angle = (i as f32) / (N_CURSOR_RETICLE_POINTS as f32) * (2.0 * PI);
+        cursor_vertices[i * 6 + 0] = cursor_gl_pos.x + (angle.cos() * cursor_gl_size.width);
+        cursor_vertices[i * 6 + 1] = cursor_gl_pos.y + (angle.sin() * cursor_gl_size.height);
+        // skip z  [i * 6 + 2]
+        cursor_vertices[i * 6 + 3] = drawing.line_style.color[0];
+        cursor_vertices[i * 6 + 4] = drawing.line_style.color[1];
+        cursor_vertices[i * 6 + 5] = drawing.line_style.color[2];
+    }
+    // // Cursor circle outline
+    for i in N_CURSOR_RETICLE_POINTS..(N_CURSOR_RETICLE_POINTS * 2) {
+        let angle = (i as f32) / (N_CURSOR_RETICLE_POINTS as f32) * (2.0 * PI);
+        cursor_vertices[i * 6 + 0] = cursor_gl_pos.x + (angle.cos() * cursor_outline_gl_size.width);
+        cursor_vertices[i * 6 + 1] =
+            cursor_gl_pos.y + (angle.sin() * cursor_outline_gl_size.height);
+        // skip z  [i * 6 + 2]
+        cursor_vertices[i * 6 + 3] = 0.0;
+        cursor_vertices[i * 6 + 4] = 0.0;
+        cursor_vertices[i * 6 + 5] = 0.0;
+    }
+
+    if !input.cursor.pressed || drawing.is_window_hidden {
+        drawing.n_points_current_line = 0;
+    } else {
+        /*
+        Each line segment is formed of 2 triangles that form a quad
+
+        p3 __ p4    - old cursor position
+          |\ |
+          | \|
+        p1 ¯¯ p2    - new cursor position
+
+        p1: current cursor position - line width
+        p2: current cursor position + line width
+        p3: previous cursor position - line width
+        p4: previous cursor position + line width
+
+        The cursor position is always between the two points
+        p3 ____ old cursor ____ p4
+          |                    |
+          |                    |
+          |                    |
+          |                    |
+        p1¯¯¯¯¯ new cursor ¯¯¯¯ p2
+        */
+
+        // Angle in radians of the line to draw
+        // Will be wrong if it's the first vertex since prev_positions isn't defined
+        // but we recalculate it before drawing when we get the second vertex
+        let angle =
+            (cursor_gl_pos.y - prev_cursor_gl_pos.y).atan2(cursor_gl_pos.x - prev_cursor_gl_pos.x);
+
+        // New line segment, add an undo point
+        if drawing.n_points_current_line == 0 {
+            drawing.undo_steps.push(drawing.vertices.len());
+        }
+
+        // update line width in gl scale
+        let line_gl_size = screen_size_to_gl(
+            drawing.line_style.width * drawing.line_style.pressure,
+            drawing.line_style.width * drawing.line_style.pressure,
+            &drawing.rect,
+        );
+
+        // Previous triangles ending points (old p1.x, p1.y, p2.x, p2.y)
+        let mut prev_p1 = Point {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let mut prev_p2 = Point {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+
+        // If it's the second vertex of the line segment,
+        // we need to recalculate the width of the first vertex since
+        // we didnt know the angle yet
+        if drawing.n_points_current_line == 1 {
+            prev_p1.x = prev_cursor_gl_pos.x + (angle - FRAC_PI_2).cos() * line_gl_size.width;
+            prev_p1.y = prev_cursor_gl_pos.y + (angle - FRAC_PI_2).sin() * line_gl_size.height;
+            prev_p2.x = prev_cursor_gl_pos.x + (angle + FRAC_PI_2).cos() * line_gl_size.width;
+            prev_p2.y = prev_cursor_gl_pos.y + (angle + FRAC_PI_2).sin() * line_gl_size.height;
+        // Get the previous positions from the list of vertices
+        } else if drawing.n_points_current_line > 1 {
+            prev_p1.x = drawing.vertices[drawing.vertices.len() - 24];
+            prev_p1.y = drawing.vertices[drawing.vertices.len() - 23];
+            prev_p2.x = drawing.vertices[drawing.vertices.len() - 12];
+            prev_p2.y = drawing.vertices[drawing.vertices.len() - 11];
+        }
+
+        // point to the left of the cursor
+        let p1 = Point {
+            x: cursor_gl_pos.x + (angle - FRAC_PI_2).cos() * line_gl_size.width,
+            y: cursor_gl_pos.y + (angle - FRAC_PI_2).sin() * line_gl_size.height,
+            z: 0.0,
+        };
+
+        // point to the right of the cursor
+        let p2 = Point {
+            x: cursor_gl_pos.x + (angle + FRAC_PI_2).cos() * line_gl_size.width,
+            y: cursor_gl_pos.y + (angle + FRAC_PI_2).sin() * line_gl_size.height,
+            z: 0.0,
+        };
+
+        // same position as previous p1
+        let p3 = if drawing.n_points_current_line > 0 {
+            prev_p1.clone()
+        } else {
+            // create 0 height rect for first line segment
+            p1.clone()
+        };
+
+        // same position as previous p2
+        let p4 = if drawing.n_points_current_line > 0 {
+            prev_p2.clone()
+        } else {
+            // create 0 height rect for first line segment
+            p2.clone()
+        };
+
+        // Triangle 3-2-1
+        // 3
+        drawing.vertices.extend(&(&p3).into_array());
+        drawing.vertices.extend(&drawing.line_style.color);
+
+        // 2
+        drawing.vertices.extend(&(&p2).into_array());
+        drawing.vertices.extend(&drawing.line_style.color);
+
+        // 1
+        drawing.vertices.extend(&(&p1).into_array());
+        drawing.vertices.extend(&drawing.line_style.color);
+
+        // Triangle 3-2-4
+        // 3
+        drawing.vertices.extend(&(&p3).into_array());
+        drawing.vertices.extend(&drawing.line_style.color);
+
+        // 2
+        drawing.vertices.extend(&(&p2).into_array());
+        drawing.vertices.extend(&drawing.line_style.color);
+
+        // 4
+        drawing.vertices.extend(&(&p4).into_array());
+        drawing.vertices.extend(&drawing.line_style.color);
+
+        drawing.n_points_current_line += 1;
+    }
+
+    if drawing.is_window_hidden {
+        unsafe {
+            gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+    } else {
+        // GL Draw Phase
+        unsafe {
+            // Start by clearing everything from last frame
+            // ClearColor has to come BEFORE Clear
+            if drawing.is_background_visible {
+                gl::ClearColor(5.0 / 255.0, 5.0 / 255.0, 9.0 / 255.0, 0.9);
+            } else {
+                gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+            }
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+
+            // Draw cursor reticle
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (cursor_vertices.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
+                mem::transmute(&cursor_vertices[0]),
+                gl::STATIC_DRAW,
+            );
+
+            gl::LineWidth(2.0);
+            gl::DrawArrays(gl::LINE_LOOP, 0, N_CURSOR_RETICLE_POINTS as i32);
+            gl::LineWidth(1.0);
+            gl::DrawArrays(
+                gl::LINE_LOOP,
+                N_CURSOR_RETICLE_POINTS as i32,
+                N_CURSOR_RETICLE_POINTS as i32,
+            );
+
+            if drawing.vertices.len() > 0 {
+                // copy the vertices to the vertex buffer
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    (drawing.vertices.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
+                    mem::transmute(&drawing.vertices[0]),
+                    gl::STATIC_DRAW,
+                );
+
+                // Draw lines using triangles to draw quads
+                // Divide by 6 since each vertex has 3 floats for pos + 3 for color
+                let n_line_vertices = drawing.vertices.len() / 6;
+                if n_line_vertices > 0 {
+                    gl::DrawArrays(gl::TRIANGLES, 0, n_line_vertices as i32);
+                }
+            }
+        }
+    }
+
+    drawing.gl_context.window_context.swap_buffers().unwrap();
 }
 
 fn main() {
     let event_loop = glutin::event_loop::EventLoop::new();
     let overlay_rect = get_overlay_rect(event_loop.available_monitors());
-    let gl_ctx = init_gl_window(&event_loop, &overlay_rect);
+    let mut cursor_vertices = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
+    let mut drawing = DrawingState {
+        need_redraw: false,           // Triggers a screen redraw when set to true
+        is_window_hidden: true,       // Hide the drawing while keeping focus
+        is_background_visible: false, // Toggle background color overlay
+        n_points_current_line: 0,     // Number of points in the current line
+        vertices: Vec::new(), // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
+        gl_context: init_gl_window(&event_loop, &overlay_rect),
+        rect: overlay_rect,
+        line_style: LineStyle {
+            color: [1.0_f32, 1.0_f32, 1.0_f32], // rgb of the line to draw. Also used by the cursor reticle
+            width: 3.0,                         // Line width to draw *in pixels*
+            pressure: 1.0,                      // Used by pen pressure to change the width
+            smoothing: 2,
+        },
+        undo_steps: Vec::new(), // List of indexes in vertex_data representing each possible undo steps
+    };
 
-    let n_cursor_reticle_points = 32;
-    let mut cursor_vertex_data = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
-    let mut lines_vertex_data = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
-    let mut n_current_line_vertex = 0; // Number of vertices in the current line
-    let mut prev_positions = [0.0_f64; 6]; // Previous triangles ending points and previous cursor (old p1.x, p1.y, p2.x, p2.y, cursor.x, cursor.y)
-    let mut need_redraw = false; // Triggers a screen redraw when set to true
-    let mut undo_steps: Vec<usize> = Vec::new(); // List of indexes in vertex_data representing each possible undo steps
-    let mut is_window_hidden = true; // Hide the drawing while keeping focus
-    let mut is_background_visible = false; // Toggle background color overlay
-    let mut modifiers = Modifiers {
-        shift: false,
-        ctrl: false,
-        alt: false,
-        logo: false,
-    };
-    // Mouse or drawing tablet cursor position and pressed state
-    let mut cursor = Cursor {
-        x: 0.0,
-        y: 0.0,
-        pressed: false,
-    };
-    let mut line_style = LineStyle {
-        color: [1.0_f32, 1.0_f32, 1.0_f32], // rgb of the line to draw. Also used by the cursor reticle
-        width: 3.0,                         // Line width to draw *in pixels*
-        pressure: 1.0,                      // Used by pen pressure to change the width
-        smoothing: 2,
+    let mut input = Input {
+        modifiers: Modifiers {
+            shift: false,
+            ctrl: false,
+            alt: false,
+            logo: false,
+        },
+        cursor: Cursor {
+            x: 0.0,
+            y: 0.0,
+            last_x: 0.0,
+            last_y: 0.0,
+            pressed: false,
+        },
     };
 
     // Initialize cursor reticle vertices
-    for _i in 0..n_cursor_reticle_points * 2 {
+    // Position will be updated during event loop
+    for _i in 0..N_CURSOR_RETICLE_POINTS * 2 {
         // line vertex
-        cursor_vertex_data.push(0.0);
-        cursor_vertex_data.push(0.0);
-        cursor_vertex_data.push(0.0);
+        cursor_vertices.push(0.0);
+        cursor_vertices.push(0.0);
+        cursor_vertices.push(0.0);
 
         // color
-        cursor_vertex_data.extend(&line_style.color);
+        cursor_vertices.extend(&drawing.line_style.color);
     }
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        handle_event(event, control_flow, &mut drawing, &mut input);
 
-        match event {
-            Event::LoopDestroyed => return,
-            Event::WindowEvent { event, .. } => match event {
-                // Alt-tab in and out
-                WindowEvent::Focused(has_focus) => {
-                    if has_focus {
-                        // unhide
-                        is_window_hidden = false;
-                    } else {
-                        // force window to minimize
-                        gl_ctx.context.window().set_minimized(true);
-                    }
-                }
-                WindowEvent::ModifiersChanged(modifier) => {
-                    modifiers.logo = modifier.logo();
-                    modifiers.alt = modifier.alt();
-                    modifiers.shift = modifier.shift();
-                    modifiers.ctrl = modifier.ctrl();
-                }
-                WindowEvent::KeyboardInput {
-                    device_id: _,
-                    input,
-                    is_synthetic: _,
-                } => {
-                    if input.state == glutin::event::ElementState::Released {
-                        match input.virtual_keycode {
-                            None => (),
-                            Some(key) => {
-                                match key {
-                                    // escape
-                                    VirtualKeyCode::Escape => {
-                                        // Todo: Request close event
-                                        unsafe {
-                                            gl::DeleteProgram(gl_ctx.program);
-                                            gl::DeleteShader(gl_ctx.fs);
-                                            gl::DeleteShader(gl_ctx.vs);
-                                            gl::DeleteBuffers(1, &gl_ctx.vbo);
-                                            gl::DeleteVertexArrays(1, &gl_ctx.vao);
-                                        }
-                                        *control_flow = ControlFlow::Exit
-                                    }
-                                    VirtualKeyCode::H => {
-                                        need_redraw = true;
-                                        // TODO: Show help
-                                    }
-                                    VirtualKeyCode::B => {
-                                        // Toggle background
-                                        need_redraw = true;
-                                        is_background_visible = !is_background_visible;
-                                    }
-                                    VirtualKeyCode::Space => {
-                                        // Clear drawings
-                                        need_redraw = true;
-                                        lines_vertex_data.resize(0, 0.0);
-                                        n_current_line_vertex = 0;
-                                    }
-                                    VirtualKeyCode::Z => {
-                                        // ctrl-z or cmd-z
-                                        if modifiers.ctrl || modifiers.logo {
-                                            // Undo (if any undo steps are available)
-                                            match undo_steps.pop() {
-                                                Some(n) => {
-                                                    lines_vertex_data.resize(n, 0.0);
-                                                    need_redraw = true;
-                                                    n_current_line_vertex = 0;
-                                                }
-                                                None => (),
-                                            }
-                                        }
-                                    }
-
-                                    // q,w,e,r,... for line colors
-
-                                    // q (white)
-                                    VirtualKeyCode::Q => {
-                                        line_style.color[0] = 1.0;
-                                        line_style.color[1] = 1.0;
-                                        line_style.color[2] = 1.0;
-                                        need_redraw = true;
-                                    }
-                                    // w (black)
-                                    VirtualKeyCode::W => {
-                                        line_style.color[0] = 0.05;
-                                        line_style.color[1] = 0.05;
-                                        line_style.color[2] = 0.05;
-                                        need_redraw = true;
-                                    }
-                                    // e (orange)
-                                    VirtualKeyCode::E => {
-                                        line_style.color[0] = 1.0;
-                                        line_style.color[1] = 0.58;
-                                        line_style.color[2] = 0.0;
-                                        need_redraw = true;
-                                    }
-                                    // r (pink)
-                                    VirtualKeyCode::R => {
-                                        line_style.color[0] = 1.0;
-                                        line_style.color[1] = 0.0;
-                                        line_style.color[2] = 0.86;
-                                        need_redraw = true;
-                                    }
-                                    // t (red)
-                                    VirtualKeyCode::T => {
-                                        line_style.color[0] = 1.0;
-                                        line_style.color[1] = 0.2;
-                                        line_style.color[2] = 0.2;
-                                        need_redraw = true;
-                                    }
-                                    // y (green)
-                                    VirtualKeyCode::Y => {
-                                        line_style.color[0] = 0.1;
-                                        line_style.color[1] = 1.0;
-                                        line_style.color[2] = 0.3;
-                                        need_redraw = true;
-                                    }
-                                    // u (blue)
-                                    VirtualKeyCode::U => {
-                                        line_style.color[0] = 0.1;
-                                        line_style.color[1] = 0.3;
-                                        line_style.color[2] = 1.0;
-                                        need_redraw = true;
-                                    }
-                                    // u (yellow)
-                                    VirtualKeyCode::I => {
-                                        line_style.color[0] = 1.0;
-                                        line_style.color[1] = 1.0;
-                                        line_style.color[2] = 0.0;
-                                        need_redraw = true;
-                                    }
-
-                                    // 1,2,3,... for size
-                                    VirtualKeyCode::Key1 => {
-                                        line_style.width = 1.0;
-                                        need_redraw = true;
-                                    }
-                                    VirtualKeyCode::Key2 => {
-                                        line_style.width = 3.0;
-                                        need_redraw = true;
-                                    }
-                                    VirtualKeyCode::Key3 => {
-                                        line_style.width = 5.0;
-                                        need_redraw = true;
-                                    }
-                                    VirtualKeyCode::Key4 => {
-                                        line_style.width = 10.0;
-                                        need_redraw = true;
-                                    }
-                                    VirtualKeyCode::Key5 => {
-                                        line_style.width = 30.0;
-                                        need_redraw = true;
-                                    }
-
-                                    _ => (),
-                                }
-                            }
-                        }
-                    }
-                }
-                WindowEvent::Touch(touch_event) => {
-                    need_redraw = true;
-
-                    if touch_event.phase == TouchPhase::Started {
-                        cursor.pressed = true;
-                        n_current_line_vertex = 0;
-                    }
-                    if touch_event.phase == TouchPhase::Ended
-                        || touch_event.phase == TouchPhase::Cancelled
-                    {
-                        cursor.pressed = false;
-                    }
-
-                    cursor.x = touch_event.location.x;
-                    cursor.y = touch_event.location.y;
-
-                    match touch_event.force {
-                        Some(force_type) => match force_type {
-                            glutin::event::Force::Calibrated {
-                                force,
-                                max_possible_force,
-                                altitude_angle: _,
-                            } => {
-                                line_style.pressure = force / max_possible_force;
-                            }
-                            glutin::event::Force::Normalized(force) => {
-                                line_style.pressure = force;
-                            }
-                        },
-                        None => (),
-                    }
-                }
-                WindowEvent::CloseRequested => {
-                    unsafe {
-                        gl::DeleteProgram(gl_ctx.program);
-                        gl::DeleteShader(gl_ctx.fs);
-                        gl::DeleteShader(gl_ctx.vs);
-                        gl::DeleteBuffers(1, &gl_ctx.vbo);
-                        gl::DeleteVertexArrays(1, &gl_ctx.vao);
-                    }
-                    *control_flow = ControlFlow::Exit
-                }
-                // Mouse pressed
-                // deprecated is for modifiers
-                #[allow(deprecated)]
-                WindowEvent::MouseInput {
-                    device_id: _,
-                    state,
-                    button,
-                    modifiers: _,
-                } => {
-                    if button == MouseButton::Left {
-                        cursor.pressed = state == ElementState::Pressed;
-
-                        if cursor.pressed == false && line_style.smoothing > 0 {
-                            let start_offset: usize = *undo_steps.last().unwrap();
-                            apply_line_smoothing(
-                                &mut lines_vertex_data[start_offset..],
-                                line_style.smoothing,
-                            );
-                        }
-                    }
-                }
-                // Mousewheel
-                // deprecated is for modifiers
-                #[allow(deprecated)]
-                WindowEvent::MouseWheel {
-                    device_id: _,
-                    delta,
-                    phase,
-                    modifiers: _,
-                } => {
-                    if phase == TouchPhase::Moved {
-                        match delta {
-                            MouseScrollDelta::LineDelta(_x, y) => {
-                                need_redraw = true;
-
-                                line_style.width -= y as f64;
-                                if line_style.width < 1.0 {
-                                    line_style.width = 1.0;
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-                // Mouse moved
-                // deprecated is for modifiers
-                #[allow(deprecated)]
-                WindowEvent::CursorMoved {
-                    device_id: _,
-                    position,
-                    modifiers: _,
-                } => {
-                    cursor.x = position.x;
-                    cursor.y = position.y;
-                    need_redraw = true;
-                }
-                _ => (),
-            },
-            _ => (),
-        }
-
-        if need_redraw {
-            need_redraw = false;
-
-            let cursor_gl_pos = PhysicalPosition::new(
-                cursor.x / (overlay_rect.width as f64) * 2.0 - 1.0,
-                cursor.y / (overlay_rect.height as f64) * -2.0 + 1.0,
-            );
-
-            // update line width in gl scale
-            let line_gl_size = gl_size(line_style.width * line_style.pressure, &overlay_rect);
-            let cursor_gl_size = gl_size(line_style.width, &overlay_rect);
-            let cursor_outline_gl_size = gl_size(line_style.width + 1.0, &overlay_rect);
-
-            // Cursor circle overlay
-            for i in 0..n_cursor_reticle_points {
-                let angle = (i as f64) / (n_cursor_reticle_points as f64) * (2.0 * PI);
-                cursor_vertex_data[i * 6 + 0] =
-                    (cursor_gl_pos.x + (angle.cos() * cursor_gl_size.width)) as f32;
-                cursor_vertex_data[i * 6 + 1] =
-                    (cursor_gl_pos.y + (angle.sin() * cursor_gl_size.height)) as f32;
-                // skip z  [i * 6 + 2]
-                cursor_vertex_data[i * 6 + 3] = line_style.color[0];
-                cursor_vertex_data[i * 6 + 4] = line_style.color[1];
-                cursor_vertex_data[i * 6 + 5] = line_style.color[2];
-            }
-            // // Cursor circle outline
-            for i in n_cursor_reticle_points..(n_cursor_reticle_points * 2) {
-                let angle = (i as f64) / (n_cursor_reticle_points as f64) * (2.0 * PI);
-                cursor_vertex_data[i * 6 + 0] =
-                    (cursor_gl_pos.x + (angle.cos() * (cursor_outline_gl_size.width))) as f32;
-                cursor_vertex_data[i * 6 + 1] =
-                    (cursor_gl_pos.y + (angle.sin() * (cursor_outline_gl_size.height))) as f32;
-                // skip z  [i * 6 + 2]
-                cursor_vertex_data[i * 6 + 3] = 0.0;
-                cursor_vertex_data[i * 6 + 4] = 0.0;
-                cursor_vertex_data[i * 6 + 5] = 0.0;
-            }
-
-            if cursor.pressed && !is_window_hidden {
-                /*
-                Each line segment is formed of 2 triangles that form a quad
-
-                p3 __ p4    - old cursor position
-                  |\ |
-                  | \|
-                p1 ¯¯ p2    - new cursor position
-
-                p1: current cursor position - line width
-                p2: current cursor position + line width
-                p3: previous cursor position - line width
-                p4: previous cursor position + line width
-
-                The cursor position is always between the two points
-                p3 ____ old cursor ____ p4
-                  |                    |
-                  |                    |
-                  |                    |
-                  |                    |
-                p1¯¯¯¯¯ new cursor ¯¯¯¯ p2
-                */
-
-                // Angle in radians of the line to draw
-                // Will be wrong if it's the first vertex since prev_positions isn't defined
-                // but we recalculate it before drawing when we get the second vertex
-                let angle = (cursor_gl_pos.y - prev_positions[5])
-                    .atan2(cursor_gl_pos.x - prev_positions[4]);
-
-                // If it's the second vertex of the line segment,
-                // we need to recalculate the width of the first vertex since
-                // we didnt know the angle yet
-                if n_current_line_vertex == 1 {
-                    prev_positions[0] =
-                        prev_positions[4] + (angle - FRAC_PI_2).cos() * line_gl_size.width;
-                    prev_positions[1] =
-                        prev_positions[5] + (angle - FRAC_PI_2).sin() * line_gl_size.height;
-                    prev_positions[2] =
-                        prev_positions[4] + (angle + FRAC_PI_2).cos() * line_gl_size.width;
-                    prev_positions[3] =
-                        prev_positions[5] + (angle + FRAC_PI_2).sin() * line_gl_size.height;
-                }
-
-                // point to the left of the cursor
-                let p1 = [
-                    (cursor_gl_pos.x + (angle - FRAC_PI_2).cos() * line_gl_size.width) as f32,
-                    (cursor_gl_pos.y + (angle - FRAC_PI_2).sin() * line_gl_size.height) as f32,
-                ];
-
-                // point to the right of the cursor
-                let p2 = [
-                    (cursor_gl_pos.x + (angle + FRAC_PI_2).cos() * line_gl_size.width) as f32,
-                    (cursor_gl_pos.y + (angle + FRAC_PI_2).sin() * line_gl_size.height) as f32,
-                ];
-
-                // previous p1
-                let p3 = [prev_positions[0] as f32, prev_positions[1] as f32];
-
-                // previous p2
-                let p4 = [prev_positions[2] as f32, prev_positions[3] as f32];
-
-                prev_positions[0] = p1[0] as f64;
-                prev_positions[1] = p1[1] as f64;
-                prev_positions[2] = p2[0] as f64;
-                prev_positions[3] = p2[1] as f64;
-                prev_positions[4] = cursor_gl_pos.x as f64; // for recalculating the first vertex
-                prev_positions[5] = cursor_gl_pos.y as f64; // for recalculating the first vertex
-
-                if n_current_line_vertex == 0 {
-                    // Skip pushing the line segment since we only have the first point available yet
-                    undo_steps.push(lines_vertex_data.len());
-                } else {
-                    // 3
-                    lines_vertex_data.push(p3[0]);
-                    lines_vertex_data.push(p3[1]);
-                    lines_vertex_data.push(0.0);
-
-                    lines_vertex_data.extend(&line_style.color);
-
-                    // 2
-                    lines_vertex_data.push(p2[0]);
-                    lines_vertex_data.push(p2[1]);
-                    lines_vertex_data.push(0.0);
-
-                    lines_vertex_data.extend(&line_style.color);
-
-                    // 1
-                    lines_vertex_data.push(p1[0]);
-                    lines_vertex_data.push(p1[1]);
-                    lines_vertex_data.push(0.0);
-
-                    lines_vertex_data.extend(&line_style.color);
-
-                    // 3
-                    lines_vertex_data.push(p3[0]);
-                    lines_vertex_data.push(p3[1]);
-                    lines_vertex_data.push(0.0);
-
-                    lines_vertex_data.extend(&line_style.color);
-
-                    // 2
-                    lines_vertex_data.push(p2[0]);
-                    lines_vertex_data.push(p2[1]);
-                    lines_vertex_data.push(0.0);
-
-                    lines_vertex_data.extend(&line_style.color);
-
-                    // 4
-                    lines_vertex_data.push(p4[0]);
-                    lines_vertex_data.push(p4[1]);
-                    lines_vertex_data.push(0.0);
-
-                    lines_vertex_data.extend(&line_style.color);
-                }
-
-                n_current_line_vertex += 1;
-            } else {
-                n_current_line_vertex = 0;
-            }
-
-            if is_window_hidden {
-                unsafe {
-                    gl::ClearColor(0.0, 0.0, 0.0, 0.0);
-                    gl::Clear(gl::COLOR_BUFFER_BIT);
-                }
-            } else {
-                // GL Draw Phase
-                unsafe {
-                    // Start by clearing everything from last frame
-                    // ClearColor has to come BEFORE Clear
-                    if is_background_visible {
-                        gl::ClearColor(5.0 / 255.0, 5.0 / 255.0, 9.0 / 255.0, 0.9);
-                    } else {
-                        gl::ClearColor(0.0, 0.0, 0.0, 0.0);
-                    }
-                    gl::Clear(gl::COLOR_BUFFER_BIT);
-
-                    // Draw cursor reticle
-                    gl::BufferData(
-                        gl::ARRAY_BUFFER,
-                        (cursor_vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
-                        mem::transmute(&cursor_vertex_data[0]),
-                        gl::STATIC_DRAW,
-                    );
-
-                    gl::LineWidth(2.0);
-                    gl::DrawArrays(gl::LINE_LOOP, 0, n_cursor_reticle_points as i32);
-                    gl::LineWidth(1.0);
-                    gl::DrawArrays(
-                        gl::LINE_LOOP,
-                        n_cursor_reticle_points as i32,
-                        n_cursor_reticle_points as i32,
-                    );
-
-                    if lines_vertex_data.len() > 0 {
-                        // copy the vertices to the vertex buffer
-                        gl::BufferData(
-                            gl::ARRAY_BUFFER,
-                            (lines_vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
-                            mem::transmute(&lines_vertex_data[0]),
-                            gl::STATIC_DRAW,
-                        );
-
-                        // Draw lines using triangles to draw quads
-                        // Divide by 6 since each vertex has 3 floats for pos + 3 for color
-                        let n_line_vertices = lines_vertex_data.len() / 6;
-                        if n_line_vertices > 0 {
-                            gl::DrawArrays(gl::TRIANGLES, 0, n_line_vertices as i32);
-                        }
-                    }
-                }
-            }
-
-            gl_ctx.context.swap_buffers().unwrap();
+        if drawing.need_redraw {
+            drawing.need_redraw = false;
+            redraw(&mut drawing, &input, &mut cursor_vertices);
         }
     });
 }
