@@ -1,6 +1,6 @@
 [package]
 name = "inke"
-version = "1.0.0"
+version = "1.2.0"
 authors = ["Julien Duranleau <julien.duranleau@gmail.com>"]
 edition = "2018"
 
