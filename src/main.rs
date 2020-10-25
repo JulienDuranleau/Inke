@@ -9,6 +9,7 @@ use std::ffi::CString;
 use std::mem;
 use std::ptr;
 use std::str;
+use std::time::SystemTime;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::event::{
@@ -43,6 +44,7 @@ struct Cursor {
     last_x: f32,
     last_y: f32,
     pressed: bool,
+    released_time: SystemTime,
 }
 
 struct Rect2D {
@@ -93,6 +95,7 @@ struct DrawingState {
     line_style: LineStyle,
     gl_context: GLState,
     undo_steps: Vec<usize>,
+    smooth_index: usize,
     vertices: Vec<f32>,
     rect: Rect2D,
 }
@@ -265,6 +268,10 @@ fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLState 
 ///
 /// Reference: https://stackoverflow.com/a/18830268
 fn apply_line_smoothing(points: &mut [f32], intensity: usize) {
+    if intensity == 0 {
+        return;
+    }
+
     // Number of line endings to parse
     let line_segment_len = 3 * 2 * 6; // 3 (points per triangle) * 2 (triangle) * 6 (properties x,y,z,r,g,b)
     let n_points = (points.len() / line_segment_len) - 1; // -1 to skip last
@@ -442,6 +449,7 @@ fn handle_event(
                                                 drawing.vertices.resize(n, 0.0);
                                                 drawing.need_redraw = true;
                                                 drawing.n_points_current_line = 0;
+                                                drawing.smooth_index = drawing.vertices.len();
                                             }
                                             None => (),
                                         }
@@ -540,12 +548,18 @@ fn handle_event(
 
                 if touch_event.phase == TouchPhase::Started {
                     input.cursor.pressed = true;
-                    drawing.n_points_current_line = 0;
                 }
                 if touch_event.phase == TouchPhase::Ended
                     || touch_event.phase == TouchPhase::Cancelled
                 {
                     input.cursor.pressed = false;
+                    input.cursor.released_time = SystemTime::now();
+
+                    apply_line_smoothing(
+                        &mut drawing.vertices[drawing.smooth_index..],
+                        drawing.line_style.smoothing,
+                    );
+                    drawing.smooth_index = drawing.vertices.len();
                 }
 
                 input.cursor.last_x = input.cursor.x;
@@ -591,12 +605,14 @@ fn handle_event(
                 if button == MouseButton::Left {
                     input.cursor.pressed = state == ElementState::Pressed;
 
-                    if input.cursor.pressed == false && drawing.line_style.smoothing > 0 {
-                        let start_offset: usize = *drawing.undo_steps.last().unwrap();
+                    if input.cursor.pressed == false {
+                        input.cursor.released_time = SystemTime::now();
+
                         apply_line_smoothing(
-                            &mut drawing.vertices[start_offset..],
+                            &mut drawing.vertices[drawing.smooth_index..],
                             drawing.line_style.smoothing,
                         );
+                        drawing.smooth_index = drawing.vertices.len();
                     }
                 }
             }
@@ -720,7 +736,9 @@ fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f
             (cursor_gl_pos.y - prev_cursor_gl_pos.y).atan2(cursor_gl_pos.x - prev_cursor_gl_pos.x);
 
         // New line segment, add an undo point
-        if drawing.n_points_current_line == 0 {
+        if drawing.n_points_current_line == 0
+            && input.cursor.released_time.elapsed().unwrap().as_millis() > 200
+        {
             drawing.undo_steps.push(drawing.vertices.len());
         }
 
@@ -893,6 +911,7 @@ fn main() {
             smoothing: 2,
         },
         undo_steps: Vec::new(), // List of indexes in vertex_data representing each possible undo steps
+        smooth_index: 0,
     };
 
     let mut input = Input {
@@ -908,6 +927,7 @@ fn main() {
             last_x: 0.0,
             last_y: 0.0,
             pressed: false,
+            released_time: SystemTime::now(),
         },
     };
 
