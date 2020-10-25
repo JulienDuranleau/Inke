@@ -1,16 +1,17 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 
 extern crate gl;
 extern crate glutin;
 
-use gl::types::*;
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::ffi::CString;
-use std::mem;
-use std::ptr;
-use std::str;
+use std::io::Write;
 use std::time::SystemTime;
+use std::{fs, mem, ptr, str};
 
+use serde::{Deserialize, Serialize};
+
+use gl::types::*;
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::event::{
     ElementState, Event, MouseButton, MouseScrollDelta, TouchPhase, VirtualKeyCode, WindowEvent,
@@ -25,6 +26,29 @@ static VS_SRC: &'static str = include_str!("shader.vert");
 static FS_SRC: &'static str = include_str!("shader.frag");
 
 const N_CURSOR_RETICLE_POINTS: usize = 32;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    smoothing: i32,
+    default_brush_size: i32,
+    default_brush_color_index: i32,
+    brush_colors: [[i32; 3]; 2],
+    background_color: [i32; 3],
+    background_color_opacity: f32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            smoothing: 1,
+            default_brush_size: 3,
+            default_brush_color_index: 0,
+            brush_colors: [[0, 0, 0], [255, 255, 255]],
+            background_color: [0, 0, 0],
+            background_color_opacity: 0.8,
+        }
+    }
+}
 
 struct Input {
     modifiers: Modifiers,
@@ -892,7 +916,35 @@ fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f
     drawing.gl_context.window_context.swap_buffers().unwrap();
 }
 
+fn create_new_config_file() -> std::io::Result<String> {
+    std::fs::File::create("config.json").expect("Failed to create default config file");
+    save_config(&Config::default());
+
+    fs::read_to_string("config.json")
+}
+
+fn load_config() -> Config {
+    let config_file_contents = match fs::read_to_string("config.json") {
+        Err(_) => create_new_config_file(),
+        Ok(r) => Ok(r),
+    }
+    .expect("Failed to read from config file");
+
+    serde_json::from_str(&config_file_contents).unwrap()
+}
+
+fn save_config(config: &Config) {
+    let default_config_json =
+        serde_json::to_string_pretty(&config).expect("Failed to encode config");
+
+    let mut f = std::fs::File::open("config.json").expect("Failed to open config file");
+    f.write_all(default_config_json.as_bytes())
+        .expect("Failed to write config to file");
+}
+
 fn main() {
+    let config = load_config();
+    println!("{:?}", config);
     let event_loop = glutin::event_loop::EventLoop::new();
     let overlay_rect = get_overlay_rect(event_loop.available_monitors());
     let mut cursor_vertices = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
