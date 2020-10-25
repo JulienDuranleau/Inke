@@ -1,32 +1,29 @@
 # Inke - Screen drawing utility
 
-## Creates an invisible overlay on which to draw.
+## Creates a transparent overlay over your screen(s) on which to draw.
 
-- Multiple colors
+- Multiple colors brush
 - Brush size control
-- Infinite undos and full wipe
+- Infinite undos and instant wipe
 - Basic drawing tablet pen pressure
-- UI Free (all keyboard shortcuts)
+- Clutter free (no UI, all keyboard shortcuts based)
 - Quick open/close
 - Alt-tab works as with any other apps
 
 ## Downloads
 [Windows, Mac and linux download links](https://github.com/JulienDuranleau/Inke/releases)
 
-On windows, extract **twice** with a tool like [7-zip](https://www.7-zip.org/) 
-
-No install process
-
+No install process, download, unzip in a folder, launch
 
 ## Shortcuts
 | Shortcut    | Action
 | :---        | :---
 | Escape      | Quit
-| Ctrl-z      | Undo
+| Ctrl-z      | Undo (Windows, Linux)
+| Cmd-z       | Undo (Mac)
 | Spacebar    | Erase everything
 | Mouse wheel | Change brush size
-| b           | Toggle dark background
-| h           | Toggle hidden state (keeps focus)
+| b           | Toggle background
 
 For a good workflow, I strongly suggest using a shortcut such as Windows-1 to launch it from your taskbar and escape out of it with the `escape` key when you're done.
 
@@ -53,5 +50,10 @@ For a good workflow, I strongly suggest using a shortcut such as Windows-1 to la
 | 4           | Big brush
 | 5           | Huge brush
 
+## Configurations
+Colors, brush sizes, smoothing and background color and opacity are stored in `config.json` next to the executable file after the first launch.
+
 ## Compile process
-Built with Rust, run `cargo build --release` in this directory.
+1. Install Rust with [https://rustup.rs/](https://rustup.rs/)
+2. Clone repo
+3. run `cargo run` in the root directory

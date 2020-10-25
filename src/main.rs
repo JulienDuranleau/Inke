@@ -36,7 +36,7 @@ struct Config {
     default_brush_color_index: i32,
     brush_colors: [[u32; 3]; 8],
     brush_sizes: [f32; 5],
-    background_color: [i32; 3],
+    background_color: [u32; 3],
     background_color_opacity: f32,
 }
 
@@ -512,49 +512,49 @@ fn handle_event(
                                 // q (white)
                                 VirtualKeyCode::Q => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[0]);
+                                        color_to_gl(drawing.config.brush_colors[0]);
                                     drawing.need_redraw = true;
                                 }
                                 // w (black)
                                 VirtualKeyCode::W => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[1]);
+                                        color_to_gl(drawing.config.brush_colors[1]);
                                     drawing.need_redraw = true;
                                 }
                                 // e (orange)
                                 VirtualKeyCode::E => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[2]);
+                                        color_to_gl(drawing.config.brush_colors[2]);
                                     drawing.need_redraw = true;
                                 }
                                 // r (pink)
                                 VirtualKeyCode::R => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[3]);
+                                        color_to_gl(drawing.config.brush_colors[3]);
                                     drawing.need_redraw = true;
                                 }
                                 // t (red)
                                 VirtualKeyCode::T => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[4]);
+                                        color_to_gl(drawing.config.brush_colors[4]);
                                     drawing.need_redraw = true;
                                 }
                                 // y (green)
                                 VirtualKeyCode::Y => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[5]);
+                                        color_to_gl(drawing.config.brush_colors[5]);
                                     drawing.need_redraw = true;
                                 }
                                 // u (blue)
                                 VirtualKeyCode::U => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[6]);
+                                        color_to_gl(drawing.config.brush_colors[6]);
                                     drawing.need_redraw = true;
                                 }
                                 // i (yellow)
                                 VirtualKeyCode::I => {
                                     drawing.line_style.color =
-                                        get_gl_color(drawing.config.brush_colors[7]);
+                                        color_to_gl(drawing.config.brush_colors[7]);
                                     drawing.need_redraw = true;
                                 }
 
@@ -906,7 +906,13 @@ fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f
             // Start by clearing everything from last frame
             // ClearColor has to come BEFORE Clear
             if drawing.is_background_visible {
-                gl::ClearColor(5.0 / 255.0, 5.0 / 255.0, 9.0 / 255.0, 0.9);
+                let bg_color_gl = color_to_gl(drawing.config.background_color);
+                gl::ClearColor(
+                    bg_color_gl[0],
+                    bg_color_gl[1],
+                    bg_color_gl[2],
+                    drawing.config.background_color_opacity,
+                );
             } else {
                 gl::ClearColor(0.0, 0.0, 0.0, 0.0);
             }
@@ -973,7 +979,7 @@ fn load_config() -> Config {
     serde_json::from_str(&config_file_contents).unwrap()
 }
 
-fn get_gl_color(color: [u32; 3]) -> [f32; 3] {
+fn color_to_gl(color: [u32; 3]) -> [f32; 3] {
     return [
         color[0] as f32 / 255.0,
         color[1] as f32 / 255.0,
@@ -995,7 +1001,7 @@ fn main() {
         gl_context: init_gl_window(&event_loop, &overlay_rect),
         rect: overlay_rect,
         line_style: LineStyle {
-            color: get_gl_color(config.brush_colors[config.default_brush_color_index as usize]), // rgb of the line to draw. Also used by the cursor reticle
+            color: color_to_gl(config.brush_colors[config.default_brush_color_index as usize]), // rgb of the line to draw. Also used by the cursor reticle
             width: config.default_brush_size, // Line width to draw *in pixels*
             pressure: 1.0,                    // Used by pen pressure to change the width
             smoothing_range: config.smoothing_range,
