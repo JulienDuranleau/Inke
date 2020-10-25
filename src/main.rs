@@ -1,4 +1,4 @@
-//#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 
 extern crate gl;
 extern crate glutin;
@@ -29,10 +29,13 @@ const N_CURSOR_RETICLE_POINTS: usize = 32;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
-    smoothing: i32,
-    default_brush_size: i32,
+    config_version: u8,
+    smoothing_range: usize,
+    smoothing_intensity: usize,
+    default_brush_size: f32,
     default_brush_color_index: i32,
-    brush_colors: [[i32; 3]; 2],
+    brush_colors: [[u32; 3]; 8],
+    brush_sizes: [f32; 5],
     background_color: [i32; 3],
     background_color_opacity: f32,
 }
@@ -40,21 +43,35 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            smoothing: 1,
-            default_brush_size: 3,
+            config_version: 1,
+            smoothing_range: 1,
+            smoothing_intensity: 1,
+            default_brush_size: 3.0,
             default_brush_color_index: 0,
-            brush_colors: [[0, 0, 0], [255, 255, 255]],
+            brush_colors: [
+                [255, 255, 255], // white
+                [10, 10, 10],    // black
+                [255, 150, 0],   // orange
+                [255, 0, 220],   // pink
+                [255, 50, 50],   // red
+                [25, 255, 75],   // green
+                [25, 75, 255],   // blue
+                [255, 255, 0],   // yellow
+            ],
+            brush_sizes: [1.0, 3.0, 5.0, 10.0, 30.0],
             background_color: [0, 0, 0],
             background_color_opacity: 0.8,
         }
     }
 }
 
+#[derive(Default)]
 struct Input {
     modifiers: Modifiers,
     cursor: Cursor,
 }
 
+#[derive(Default)]
 struct Modifiers {
     shift: bool,
     ctrl: bool,
@@ -62,15 +79,17 @@ struct Modifiers {
     logo: bool,
 }
 
+#[derive(Default, Debug)]
 struct Cursor {
     x: f32,
     y: f32,
     last_x: f32,
     last_y: f32,
     pressed: bool,
-    released_time: SystemTime,
+    released_time: Option<SystemTime>,
 }
 
+#[derive(Default, Debug)]
 struct Rect2D {
     x: f32,
     y: f32,
@@ -78,12 +97,13 @@ struct Rect2D {
     height: f32,
 }
 
+#[derive(Default, Debug)]
 struct Size2D {
     width: f32,
     height: f32,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 struct Point {
     x: f32,
     y: f32,
@@ -95,11 +115,13 @@ impl Point {
     }
 }
 
+#[derive(Default)]
 struct LineStyle {
     color: [f32; 3],
     width: f32,
     pressure: f32,
-    smoothing: usize,
+    smoothing_range: usize,
+    smoothing_intensity: usize,
 }
 
 struct GLState {
@@ -112,6 +134,7 @@ struct GLState {
 }
 
 struct DrawingState {
+    config: Config,
     need_redraw: bool,
     is_window_hidden: bool,
     is_background_visible: bool,
@@ -291,8 +314,8 @@ fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLState 
 /// Apply line smoothing to parts of a point list
 ///
 /// Reference: https://stackoverflow.com/a/18830268
-fn apply_line_smoothing(points: &mut [f32], intensity: usize) {
-    if intensity == 0 {
+fn apply_line_smoothing(points: &mut [f32], smoothing_range: usize) {
+    if smoothing_range == 0 {
         return;
     }
 
@@ -302,9 +325,13 @@ fn apply_line_smoothing(points: &mut [f32], intensity: usize) {
 
     // skip first
     for i in 1..n_points {
-        let start = if i >= intensity { i - intensity } else { 0 };
-        let end = if i + intensity < n_points {
-            i + intensity
+        let start = if i >= smoothing_range {
+            i - smoothing_range
+        } else {
+            0
+        };
+        let end = if i + smoothing_range < n_points {
+            i + smoothing_range
         } else {
             n_points
         };
@@ -484,80 +511,72 @@ fn handle_event(
 
                                 // q (white)
                                 VirtualKeyCode::Q => {
-                                    drawing.line_style.color[0] = 1.0;
-                                    drawing.line_style.color[1] = 1.0;
-                                    drawing.line_style.color[2] = 1.0;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[0]);
                                     drawing.need_redraw = true;
                                 }
                                 // w (black)
                                 VirtualKeyCode::W => {
-                                    drawing.line_style.color[0] = 0.05;
-                                    drawing.line_style.color[1] = 0.05;
-                                    drawing.line_style.color[2] = 0.05;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[1]);
                                     drawing.need_redraw = true;
                                 }
                                 // e (orange)
                                 VirtualKeyCode::E => {
-                                    drawing.line_style.color[0] = 1.0;
-                                    drawing.line_style.color[1] = 0.58;
-                                    drawing.line_style.color[2] = 0.0;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[2]);
                                     drawing.need_redraw = true;
                                 }
                                 // r (pink)
                                 VirtualKeyCode::R => {
-                                    drawing.line_style.color[0] = 1.0;
-                                    drawing.line_style.color[1] = 0.0;
-                                    drawing.line_style.color[2] = 0.86;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[3]);
                                     drawing.need_redraw = true;
                                 }
                                 // t (red)
                                 VirtualKeyCode::T => {
-                                    drawing.line_style.color[0] = 1.0;
-                                    drawing.line_style.color[1] = 0.2;
-                                    drawing.line_style.color[2] = 0.2;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[4]);
                                     drawing.need_redraw = true;
                                 }
                                 // y (green)
                                 VirtualKeyCode::Y => {
-                                    drawing.line_style.color[0] = 0.1;
-                                    drawing.line_style.color[1] = 1.0;
-                                    drawing.line_style.color[2] = 0.3;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[5]);
                                     drawing.need_redraw = true;
                                 }
                                 // u (blue)
                                 VirtualKeyCode::U => {
-                                    drawing.line_style.color[0] = 0.1;
-                                    drawing.line_style.color[1] = 0.3;
-                                    drawing.line_style.color[2] = 1.0;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[6]);
                                     drawing.need_redraw = true;
                                 }
-                                // u (yellow)
+                                // i (yellow)
                                 VirtualKeyCode::I => {
-                                    drawing.line_style.color[0] = 1.0;
-                                    drawing.line_style.color[1] = 1.0;
-                                    drawing.line_style.color[2] = 0.0;
+                                    drawing.line_style.color =
+                                        get_gl_color(drawing.config.brush_colors[7]);
                                     drawing.need_redraw = true;
                                 }
 
                                 // 1,2,3,... for size
                                 VirtualKeyCode::Key1 => {
-                                    drawing.line_style.width = 1.0;
+                                    drawing.line_style.width = drawing.config.brush_sizes[0];
                                     drawing.need_redraw = true;
                                 }
                                 VirtualKeyCode::Key2 => {
-                                    drawing.line_style.width = 3.0;
+                                    drawing.line_style.width = drawing.config.brush_sizes[1];
                                     drawing.need_redraw = true;
                                 }
                                 VirtualKeyCode::Key3 => {
-                                    drawing.line_style.width = 5.0;
+                                    drawing.line_style.width = drawing.config.brush_sizes[2];
                                     drawing.need_redraw = true;
                                 }
                                 VirtualKeyCode::Key4 => {
-                                    drawing.line_style.width = 10.0;
+                                    drawing.line_style.width = drawing.config.brush_sizes[3];
                                     drawing.need_redraw = true;
                                 }
                                 VirtualKeyCode::Key5 => {
-                                    drawing.line_style.width = 30.0;
+                                    drawing.line_style.width = drawing.config.brush_sizes[4];
                                     drawing.need_redraw = true;
                                 }
 
@@ -577,13 +596,17 @@ fn handle_event(
                     || touch_event.phase == TouchPhase::Cancelled
                 {
                     input.cursor.pressed = false;
-                    input.cursor.released_time = SystemTime::now();
+                    input.cursor.released_time = Some(SystemTime::now());
 
-                    apply_line_smoothing(
-                        &mut drawing.vertices[drawing.smooth_index..],
-                        drawing.line_style.smoothing,
-                    );
+                    for _ in 0..drawing.line_style.smoothing_intensity {
+                        apply_line_smoothing(
+                            &mut drawing.vertices[drawing.smooth_index..],
+                            drawing.line_style.smoothing_range,
+                        );
+                    }
                     drawing.smooth_index = drawing.vertices.len();
+
+                    drawing.need_redraw = true;
                 }
 
                 input.cursor.last_x = input.cursor.x;
@@ -630,13 +653,17 @@ fn handle_event(
                     input.cursor.pressed = state == ElementState::Pressed;
 
                     if input.cursor.pressed == false {
-                        input.cursor.released_time = SystemTime::now();
+                        input.cursor.released_time = Some(SystemTime::now());
 
-                        apply_line_smoothing(
-                            &mut drawing.vertices[drawing.smooth_index..],
-                            drawing.line_style.smoothing,
-                        );
+                        for _ in 0..drawing.line_style.smoothing_intensity {
+                            apply_line_smoothing(
+                                &mut drawing.vertices[drawing.smooth_index..],
+                                drawing.line_style.smoothing_range,
+                            );
+                        }
                         drawing.smooth_index = drawing.vertices.len();
+
+                        drawing.need_redraw = true;
                     }
                 }
             }
@@ -761,7 +788,15 @@ fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f
 
         // New line segment, add an undo point
         if drawing.n_points_current_line == 0
-            && input.cursor.released_time.elapsed().unwrap().as_millis() > 200
+            && (input.cursor.released_time.is_none()
+                || input
+                    .cursor
+                    .released_time
+                    .unwrap()
+                    .elapsed()
+                    .unwrap()
+                    .as_millis()
+                    > 200)
         {
             drawing.undo_steps.push(drawing.vertices.len());
         }
@@ -885,7 +920,7 @@ fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f
                 gl::STATIC_DRAW,
             );
 
-            gl::LineWidth(2.0);
+            gl::LineWidth(3.0);
             gl::DrawArrays(gl::LINE_LOOP, 0, N_CURSOR_RETICLE_POINTS as i32);
             gl::LineWidth(1.0);
             gl::DrawArrays(
@@ -916,16 +951,21 @@ fn redraw(drawing: &mut DrawingState, input: &Input, cursor_vertices: &mut Vec<f
     drawing.gl_context.window_context.swap_buffers().unwrap();
 }
 
-fn create_new_config_file() -> std::io::Result<String> {
-    std::fs::File::create("config.json").expect("Failed to create default config file");
-    save_config(&Config::default());
+fn create_default_config_file() -> std::io::Result<String> {
+    let mut f = std::fs::File::create("config.json").expect("Failed to create default config file");
 
-    fs::read_to_string("config.json")
+    let default_config_json =
+        serde_json::to_string_pretty(&Config::default()).expect("Failed to encode config");
+
+    f.write_all(default_config_json.as_bytes())
+        .expect("Failed to write config to file");
+
+    Ok(default_config_json)
 }
 
 fn load_config() -> Config {
     let config_file_contents = match fs::read_to_string("config.json") {
-        Err(_) => create_new_config_file(),
+        Err(_) => create_default_config_file(),
         Ok(r) => Ok(r),
     }
     .expect("Failed to read from config file");
@@ -933,23 +973,21 @@ fn load_config() -> Config {
     serde_json::from_str(&config_file_contents).unwrap()
 }
 
-fn save_config(config: &Config) {
-    let default_config_json =
-        serde_json::to_string_pretty(&config).expect("Failed to encode config");
-
-    let mut f = std::fs::File::open("config.json").expect("Failed to open config file");
-    f.write_all(default_config_json.as_bytes())
-        .expect("Failed to write config to file");
+fn get_gl_color(color: [u32; 3]) -> [f32; 3] {
+    return [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+    ];
 }
 
 fn main() {
     let config = load_config();
-    println!("{:?}", config);
     let event_loop = glutin::event_loop::EventLoop::new();
     let overlay_rect = get_overlay_rect(event_loop.available_monitors());
     let mut cursor_vertices = Vec::new(); // List of vertices sent to the vba. Each vertices is x, y, z, r, g, b (6 length)
     let mut drawing = DrawingState {
-        need_redraw: false,           // Triggers a screen redraw when set to true
+        need_redraw: true,            // Triggers a screen redraw when set to true
         is_window_hidden: true,       // Hide the drawing while keeping focus
         is_background_visible: false, // Toggle background color overlay
         n_points_current_line: 0,     // Number of points in the current line
@@ -957,30 +995,15 @@ fn main() {
         gl_context: init_gl_window(&event_loop, &overlay_rect),
         rect: overlay_rect,
         line_style: LineStyle {
-            color: [1.0_f32, 1.0_f32, 1.0_f32], // rgb of the line to draw. Also used by the cursor reticle
-            width: 3.0,                         // Line width to draw *in pixels*
-            pressure: 1.0,                      // Used by pen pressure to change the width
-            smoothing: 2,
+            color: get_gl_color(config.brush_colors[config.default_brush_color_index as usize]), // rgb of the line to draw. Also used by the cursor reticle
+            width: config.default_brush_size, // Line width to draw *in pixels*
+            pressure: 1.0,                    // Used by pen pressure to change the width
+            smoothing_range: config.smoothing_range,
+            smoothing_intensity: config.smoothing_intensity,
         },
         undo_steps: Vec::new(), // List of indexes in vertex_data representing each possible undo steps
         smooth_index: 0,
-    };
-
-    let mut input = Input {
-        modifiers: Modifiers {
-            shift: false,
-            ctrl: false,
-            alt: false,
-            logo: false,
-        },
-        cursor: Cursor {
-            x: 0.0,
-            y: 0.0,
-            last_x: 0.0,
-            last_y: 0.0,
-            pressed: false,
-            released_time: SystemTime::now(),
-        },
+        config: config,
     };
 
     // Initialize cursor reticle vertices
@@ -990,10 +1013,10 @@ fn main() {
         cursor_vertices.push(0.0);
         cursor_vertices.push(0.0);
         cursor_vertices.push(0.0);
-
         // color
         cursor_vertices.extend(&drawing.line_style.color);
     }
+    let mut input: Input = Default::default();
 
     event_loop.run(move |event, _, control_flow| {
         handle_event(event, control_flow, &mut drawing, &mut input);
