@@ -26,7 +26,11 @@ DEPLOY_TO_GITHUB_OSX: &DEPLOY_TO_GITHUB_OSX
     - mkdir $name
     - mkdir $name/inke.app
     - mkdir $name/inke.app/Contents
-    - cp target/$TARGET/release/inke $name/inke.app/Contents/
+    - mkdir $name/inke.app/Contents/MacOS
+    - mkdir $name/inke.app/Contents/Resources
+    - cp target/$TARGET/release/inke $name/inke.app/Contents/MacOS/
+    - cp build_resources/Info.plist $name/inke.app/Contents/
+    - cp build_resources/medias/icon.icns $name/inke.app/Contents/Resources/
     - zip -r $name.zip $name/inke.app
   deploy:
     provider: releases
@@ -44,6 +48,8 @@ DEPLOY_TO_GITHUB_WINDOWS: &DEPLOY_TO_GITHUB_WINDOWS
     - name="inke-$TRAVIS_TAG-$TARGET_NAME"
     - mkdir $name
     - cp target/$TARGET/release/inke $name/
+    - curl "https://github.com/electron/rcedit/releases/download/v1.1.1/rcedit-x64.exe" --output rcedit.exe
+    - rcedit.exe "$name/inke" --set-icon "build_resources/medias/icon.ico"
     - 7z.exe a -r $name.zip $name
   deploy:
     provider: releases
