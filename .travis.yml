@@ -48,8 +48,9 @@ DEPLOY_TO_GITHUB_WINDOWS: &DEPLOY_TO_GITHUB_WINDOWS
     - name="inke-$TRAVIS_TAG-$TARGET_NAME"
     - mkdir $name
     - cp target/$TARGET/release/inke.exe $name/
+    - cp build_resources/medias/icon.ico $name/
     - curl -L "https://github.com/electron/rcedit/releases/download/v1.1.1/rcedit-x64.exe" --output rcedit-x64.exe
-    - ./rcedit-x64.exe "$name/inke.exe" --set-icon "build_resources/medias/icon.ico"
+    - ./rcedit-x64.exe "$name/inke.exe" --set-icon "$name/icon.ico"
     - 7z.exe a -r $name.zip $name
   deploy:
     provider: releases
