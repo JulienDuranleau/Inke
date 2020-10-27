@@ -1,0 +1,4 @@
+#!/bin/bash
+CONTENTS_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )
+cd "$CONTENTS_DIR/Resources"
+$CONTENTS_DIR/MacOS/inke_exec
