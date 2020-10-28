@@ -13,7 +13,11 @@
 ## Downloads
 [Windows, Mac and linux download links](https://github.com/JulienDuranleau/Inke/releases)
 
+## Install on Windows/Linux
 No install process, download, unzip in a folder, launch
+
+## Install on MacOSX
+Download, unzip in a folder and move the app to your `/Applications` folder. Authorize app in your security panel if OSX doesn't let you launch it the first time.
 
 ## Shortcuts
 | Shortcut    | Action
