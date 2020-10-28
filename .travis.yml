@@ -30,6 +30,7 @@ DEPLOY_TO_GITHUB_OSX: &DEPLOY_TO_GITHUB_OSX
     - mkdir $name/inke.app/Contents/Resources
     - cp target/$TARGET/release/inke $name/inke.app/Contents/MacOS/inke_exec
     - cp build_resources/osx_launcher $name/inke.app/Contents/MacOS/inke
+    - chmod +x $name/inke.app/Contents/MacOS/inke
     - cp build_resources/Info.plist $name/inke.app/Contents/
     - cp build_resources/medias/icon.icns $name/inke.app/Contents/Resources/
     - zip -r $name.zip $name/inke.app
