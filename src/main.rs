@@ -4,6 +4,7 @@ extern crate gl;
 extern crate glutin;
 
 use std::f32::consts::{FRAC_PI_2, PI};
+use std::ffi::CStr;
 use std::ffi::CString;
 use std::io::Write;
 use std::time::SystemTime;
@@ -109,6 +110,7 @@ struct Point {
     y: f32,
     z: f32,
 }
+
 impl Point {
     fn into_array(&self) -> [f32; 3] {
         [self.x, self.y, self.z]
@@ -274,10 +276,17 @@ fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLState 
 
         // Use shader program
         gl::UseProgram(program);
-        gl::BindFragDataLocation(program, 0, CString::new("out_color").unwrap().as_ptr());
+        gl::BindFragDataLocation(
+            program,
+            0,
+            CStr::from_bytes_with_nul(b"out_color\0").unwrap().as_ptr(),
+        );
 
         // position attrib
-        let pos_attr = gl::GetAttribLocation(program, CString::new("position").unwrap().as_ptr());
+        let pos_attr = gl::GetAttribLocation(
+            program,
+            CStr::from_bytes_with_nul(b"position\0").unwrap().as_ptr(),
+        );
         gl::EnableVertexAttribArray(pos_attr as GLuint);
         gl::VertexAttribPointer(
             pos_attr as GLuint,                                   // index of attribute
@@ -289,7 +298,10 @@ fn init_gl_window(event_loop: &EventLoop<()>, overlay_rect: &Rect2D) -> GLState 
         );
 
         // vertex_color attrib
-        let color_attr = gl::GetAttribLocation(program, CString::new("vColor").unwrap().as_ptr());
+        let color_attr = gl::GetAttribLocation(
+            program,
+            CStr::from_bytes_with_nul(b"vColor\0").unwrap().as_ptr(),
+        );
         gl::EnableVertexAttribArray(color_attr as GLuint);
         gl::VertexAttribPointer(
             color_attr as GLuint,                                 // index of attribute
@@ -397,29 +409,37 @@ fn apply_line_smoothing(points: &mut [f32], smoothing_range: usize) {
 fn get_overlay_rect(monitors: impl Iterator<Item = MonitorHandle>) -> Rect2D {
     let mut min_x: i32 = 0;
     let mut min_y: i32 = 0;
-    let mut total_width: u32 = 0;
-    let mut total_height: u32 = 0;
+    let mut max_x: i32 = 0;
+    let mut max_y: i32 = 0;
 
     for monitor in monitors {
+        // println!(
+        //     "Monitor {} = x: {}, y: {}, w: {}, h: {}",
+        //     monitor.name().unwrap(),
+        //     monitor.position().x,
+        //     monitor.position().y,
+        //     monitor.size().width,
+        //     monitor.size().height
+        // );
         if monitor.position().x < min_x {
             min_x = monitor.position().x;
         }
         if monitor.position().y < min_y {
             min_y = monitor.position().y;
         }
-        if monitor.size().height > total_height {
-            total_height = monitor.size().height;
+        if monitor.position().x + (monitor.size().width as i32) > max_x {
+            max_x = monitor.position().x + (monitor.size().width as i32);
         }
-        total_width += monitor.size().width;
+        if monitor.position().y + (monitor.size().height as i32) > max_y {
+            max_y = monitor.position().y + (monitor.size().height as i32);
+        }
     }
-
-    total_height += min_y.abs() as u32;
 
     Rect2D {
         x: min_x as f32,
         y: min_y as f32,
-        width: total_width as f32,
-        height: total_height as f32,
+        width: (max_x - min_x) as f32,
+        height: (max_y - min_y) as f32,
     }
 }
 
