@@ -508,8 +508,10 @@ fn handle_event(
                                 VirtualKeyCode::Space => {
                                     // Clear drawings
                                     drawing.need_redraw = true;
-                                    drawing.vertices.resize(0, 0.0);
+                                    drawing.vertices.clear(); //resize(0, 0.0);
+                                    drawing.undo_steps.clear();
                                     drawing.n_points_current_line = 0;
+                                    drawing.smooth_index = 0;
                                 }
                                 VirtualKeyCode::Z => {
                                     // ctrl-z or cmd-z
